@@ -27,13 +27,11 @@ with utils.block('Command Line') as b:
 with utils.block('Arguments') as b:
   b.print(pargs, indent=False)
 
-model = pargs.model()
-optimizer = pargs.optimizer(model.parameters())
 train_dataset = pargs.train_dataset()
 validation_dataset = pargs.validation_dataset()
-
-trainer = trainer.Trainer(model=model,
-                          optimizer=optimizer)
+model = pargs.model(train_dataset)
+optimizer = pargs.optimizer(model.parameters())
+trainer = trainer.Trainer()
 
 for (epoch, batch, steps), data in trainer(train_dataset, epochs=pargs.epochs, progress='Training'):
   optimizer.zero_grad()
@@ -54,6 +52,7 @@ for (epoch, batch, steps), data in trainer(train_dataset, epochs=pargs.epochs, p
                                 batch=batch))
 
   if steps % 100000 == 0:
+    model.eval()
     validation_loss = sum(model(*data)[0].item() for _, data in trainer(validation_dataset, progress='Validation', leave=False)) 
     validation_loss /= len(validation_dataset)
     trainer.log(steps, validation=validation_loss)

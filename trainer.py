@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 
 class Trainer():
-  def __init__(self, model, optimizer, **kwargs):
+  def __init__(self, **kwargs):
     self.__dict__.update(locals())
     self.__dict__.update(kwargs)
     self._last_log = {}

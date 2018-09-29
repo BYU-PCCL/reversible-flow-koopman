@@ -27,7 +27,12 @@ class Network(nn.Module):
     self.lazy_init(x)
     h = self.net(x)
     shift = h[:, 0::2]
-    scale = torch.sigmoid(h[:, 1::2] + 2.)
+
+    # the - 6 term corresponds to a bias of e^6, making
+    # the derivative go to zero a little faster than linear
+    # which improves stability
+    scale = torch.log(h[:, 1::2].abs() + 2e-4)
+
     return scale, shift
 
 class ReversePermutation(nn.Module):
@@ -62,7 +67,8 @@ class LogWhiteGaussian(nn.Module):
     self.logs = 0
 
   def forward(self, z):
-    return (-0.5 * (LogWhiteGaussian.log_2pi + 2. * self.logs + ((z - self.mean) ** 2) / np.exp(2. * self.logs))).sum(dim=[1,2,3])
+    log_likelihood = (-0.5 * (LogWhiteGaussian.log_2pi + 2. * self.logs + ((z - self.mean) ** 2).view(z.size(0), -1).mean(1) / np.exp(2. * self.logs)))
+    return log_likelihood
 
 # class FlowStep(Layer):
 #     """
@@ -116,7 +122,7 @@ class ReversibleFlow(nn.Module):
                          ┃ x ┃
                          ┗━━━┛
   """
-  def __init__(self, dataset, num_blocks=2, num_layers_per_block=3, squeeze_factor=2, f:argchoice=[Network], permute:argchoice=[ReversePermutation]):
+  def __init__(self, dataset, num_blocks=1, num_layers_per_block=2, squeeze_factor=2, f:argchoice=[Network], permute:argchoice=[ReversePermutation]):
     self.__dict__.update(locals())
     super(ReversibleFlow, self).__init__()
     self.prior = LogWhiteGaussian()
@@ -152,10 +158,11 @@ class ReversibleFlow(nn.Module):
 
         # step of flow
         z1, z2 = torch.chunk(z, 2, dim=1)
-        scale, shift = self.networks[L][K](z1)
+        logscale, shift = self.networks[L][K](z1)
         z2 += shift
-        z2 *= scale
-        logdet_accum += torch.log(scale).sum(dim=[1,2,3])
+        z2 *= torch.exp(logscale)
+
+        logdet_accum += logscale.view(logscale.size(0), -1).mean(1)
         z = torch.cat([z1, z2], dim=1)
 
       # split heriachical 
@@ -173,10 +180,10 @@ class ReversibleFlow(nn.Module):
       for K in reversed(range(self.num_layers_per_block)):
         #reverse flow step
         z1, z2 = torch.chunk(z, 2, dim=1)
-        scale, shift = self.networks[L][K](z1)
-        z2 /= scale
-        z2 -= shift 
-        logdet_accum -= torch.log(scale).sum(dim=[1,2,3])
+        logscale, shift = self.networks[L][K](z1)
+        z2 /= torch.exp(logscale)
+        z2 -= shift
+        logdet_accum -= logscale.view(logscale.size(0), -1).mean(1)
         z = torch.cat([z1, z2], dim=1)
 
         # unpermute
@@ -190,15 +197,28 @@ class ReversibleFlow(nn.Module):
   def test(self, x, y):
     z, logdet = self.encode(x)
     xhat, logdet_zero = self.decode(z, logdet)
-    assert (xhat - x).abs().sum() < 1e-3
-    assert logdet_zero.abs().sum() < 1e-3
-    assert logdet.abs().sum() > 1e-3
+    assert (xhat - x).abs().max() < 1e-3, (xhat - x).abs().sum().item()
+    assert logdet_zero.abs().max() < 1e-3, logdet_zero.abs().sum().item()
+    #assert logdet.abs().sum() > 1e-3
 
   def forward(self, x, y):
+    x = x.normal_()
     z, logdet_accum = self.encode(x)
-    loss = (self.prior(z) + logdet_accum).mean(dim=0)
+
+    n_bins = 2**8
+    M = np.prod(x.shape[1:])
+    discretization_correction = float(np.log(n_bins))
+    mean_log_likelihood = self.prior(z) + logdet_accum
+
+    loss = -mean_log_likelihood #+ discretization_correction
+    loss /=  float(np.log(2.))
+    loss = loss.mean()
 
     return loss, z
 
-  def log(self, **kwargs):
+  def log(self, step, out, **kwargs):
+
+    if step % 5== 0:
+      return {'frob_norm_cov': ((np.eye(1568) - np.cov(out.view(out.size(0), -1).t().cpu().detach().numpy()))**2).sum() - 1568}
+
     return {}

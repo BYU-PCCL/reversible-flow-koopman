@@ -11,21 +11,15 @@ import libs.colors.colors as colors
 import utils
 
 args.module('model', models)
-args.module('optimizer', torch.optim)
+args.module('optimizer', torch.optim, default=torch.optim.Adam)
 args.module('train_dataset', datasets)
 args.module('validation_dataset', datasets)
 
-args.arguments(epochs=1, resume=True, log_frequency=1000)
+args.arguments(epochs=1, batch_size=32, resume=True, log_frequency=1)
 
 args.defaults({'dataset.subdataset.optimizer.lr': 1e-8})
 
 pargs = args.reader()
-
-with utils.block('Command Line') as b:
-  b.print(pargs.command())
-
-with utils.block('Arguments') as b:
-  b.print(pargs, indent=False)
 
 train_dataset = pargs.train_dataset()
 validation_dataset = pargs.validation_dataset()
@@ -33,7 +27,13 @@ model = pargs.model(train_dataset)
 optimizer = pargs.optimizer(model.parameters())
 trainer = trainer.Trainer()
 
-for (epoch, batch, steps), data in trainer(train_dataset, epochs=pargs.epochs, progress='Training'):
+with utils.block('Command Line') as b:
+  b.print(pargs.command())
+
+with utils.block('Arguments') as b:
+  b.print(pargs, indent=False)
+
+for (epoch, batch, steps), data in trainer(train_dataset, epochs=pargs.epochs, progress='Training', batch_size=pargs.batch_size):
   optimizer.zero_grad()
   model.train()
   
@@ -49,9 +49,10 @@ for (epoch, batch, steps), data in trainer(train_dataset, epochs=pargs.epochs, p
                                 out=out,
                                 data=data,
                                 epoch=epoch,
-                                batch=batch))
+                                batch=batch,
+                                step=steps))
 
-  if steps % 100000 == 0:
+  if (steps + 1) % 100000 == 0:
     model.eval()
     validation_loss = sum(model(*data)[0].item() for _, data in trainer(validation_dataset, progress='Validation', leave=False)) 
     validation_loss /= len(validation_dataset)

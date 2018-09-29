@@ -7,7 +7,6 @@ class Trainer():
     self.__dict__.update(locals())
     self.__dict__.update(kwargs)
     self._last_log = {}
-    self.s = 0
     if 'postfix' not in kwargs:
       self.postfix = lambda: self._last_log
   
@@ -27,7 +26,7 @@ class Trainer():
           
           with tqdm(dataloader, 
                     disable=not show_progress,
-                    desc=progress, leave=leave, miniters=1000) as bar:
+                    desc=progress, leave=leave) as bar:
             
             for i, data in enumerate(bar):
               
@@ -51,7 +50,7 @@ class Trainer():
              } if isinstance(dd, dict) else { prefix : dd }
   
   def log(self, t, **kwargs):
-    self._last_log = self.flatten_dict(kwargs)
+    self._last_log.update(self.flatten_dict(kwargs))
     for label, value in self._last_log.items():
       if torch.is_tensor(value) and value.numel() == 1:
         self._last_log[label] = value.item()

@@ -14,8 +14,9 @@ args.module('model', models)
 args.module('optimizer', torch.optim, default=torch.optim.Adam)
 args.module('train_dataset', datasets)
 args.module('validation_dataset', datasets)
+args.module('trainer', trainer.Trainer)
 
-args.arguments(epochs=1, batch_size=32, resume=True, log_frequency=1)
+args.arguments(epochs=1, batch_size=32, resume=True, log_frequency=1, cuda=True)
 
 args.defaults({'dataset.subdataset.optimizer.lr': 1e-8})
 
@@ -25,7 +26,11 @@ train_dataset = pargs.train_dataset()
 validation_dataset = pargs.validation_dataset()
 model = pargs.model(train_dataset)
 optimizer = pargs.optimizer(model.parameters())
-trainer = trainer.Trainer()
+trainer = pargs.trainer()
+
+if pargs.cuda:
+  model.cuda()
+  trainer.cuda()
 
 with utils.block('Command Line') as b:
   b.print(pargs.command())
@@ -38,8 +43,8 @@ for (epoch, batch, steps), data in trainer(train_dataset, epochs=pargs.epochs, p
   model.train()
   
   loss_value, out = model(*data)
-
   loss_value.backward()
+
   optimizer.step()
 
   if steps % pargs.log_frequency == 0:

@@ -1,12 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from libs.args.args import argchoice
+from libs.args.args import argchoice, argignore
 import numpy as np
 import pdb
+import utils
 
 class Network(nn.Module):
-  def __init__(self):
+  def __init__(self, hidden=512):
+    self.__dict__.update(locals())
     super(Network, self).__init__()
 
   def lazy_init(self, x):
@@ -15,11 +17,11 @@ class Network(nn.Module):
       b, c, h, w = x.size()
 
       self.net = nn.Sequential(
-        nn.Conv2d(c, 10, 3, stride=1, padding=1),
+        nn.Conv2d(c, self.hidden, 3, stride=1, padding=1),
         nn.ReLU(inplace=True),
-        nn.Conv2d(10, 10, 1, stride=1, padding=0),
+        nn.Conv2d(self.hidden, self.hidden, 1, stride=1, padding=0),
         nn.ReLU(inplace=True),
-        nn.Conv2d(10, c * 2, 3, stride=1, padding=1))
+        nn.Conv2d(self.hidden, c * 2, 3, stride=1, padding=1))
 
       # initalize with these
       self.net[-1].weight.data.fill_(0)
@@ -33,49 +35,6 @@ class Network(nn.Module):
 
     return scale, shift
 
-# https://github.com/chaiyujin/glow-pytorch/blob/master/glow/modules.py
-# class ActNorm(nn.Module):
-#   """
-#   Activation Normalization
-#   Initialize the bias and scale with a given minibatch,
-#   so that the output per-channel have zero mean and unit variance for that.
-#   After initialization, `bias` and `logs` will be trained as parameters.
-#   """
-
-#   def __init__(self, num_features, scale=1.):
-#       super(ActNorm).__init__()
-#       self.scale = scale
-
-#   def lazy_init(self, input):
-#     b, c, h, w = input.size()
-#     if not hasattr(self, '_initialized'):
-#       self._initialized = True
-#       # register mean and scale
-#       size = [1, c, 1, 1]
-#       self.bias = nn.Parameter(torch.zeros(*size))
-#       self.logs = nn.Parameter(torch.zeros(*size))
-
-#       with torch.no_grad():
-#         bias = thops.mean(input.clone(), dim=[0, 2, 3], keepdim=True) * -1.0
-#         vars = thops.mean((input.clone() + bias) ** 2, dim=[0, 2, 3], keepdim=True)
-#         logs = torch.log(self.scale/(torch.sqrt(vars)+1e-6))
-#         self.bias.data.copy_(bias.data)
-#         self.logs.data.copy_(logs.data)
-#         self.inited = True
-
-#   def forward(self, input, logdet=None, reverse=False):
-#     self.lazy_init(input)
-#     if not reverse:
-#         input += self.bias
-#         input *= torch.exp(self.logs)
-#         logdet += self.logs.sum() / np.prod(self.logs.shape[2:])
-#     else:
-#         # scale and center
-#         input /= torch.exp(self.logs)
-#         input -= self.bias
-#         logdet -= self.logs.sum() / np.prod(self.logs.shape[2:])
-#     return input, logdet
-
 class ReversePermutation(nn.Module):
   def __init__(self):
     super(ReversePermutation, self).__init__()
@@ -83,12 +42,19 @@ class ReversePermutation(nn.Module):
   def forward(self, x, reverse=False):
     return x.flip(1)
 
+class NullPermutation(nn.Module):
+  def __init__(self):
+    super(NullPermutation, self).__init__()
+
+  def forward(self, x, reverse=False):
+    return x
+
 class Squeeze(nn.Module):
   def __init__(self, factor=2):
     super(Squeeze, self).__init__()
     self.factor = factor
 
-  def forward(self, x, factor=2, reverse=False):
+  def forward(self, x, reverse=False):
     b, c, h, w = x.size()
     if reverse:
       return F.fold(x.view(b, c, -1), (h * self.factor, w * self.factor), 
@@ -97,7 +63,7 @@ class Squeeze(nn.Module):
     else:
       y = F.unfold(x, (self.factor, self.factor), 
                   stride=self.factor, dilation=1, padding=0)
-      return y.view(b, -1, h // factor, w // factor)
+      return y.view(b, -1, h // self.factor, w // self.factor)
     
 class LogGaussian(nn.Module):
   log_2pi = float(np.log(2 * np.pi))
@@ -172,7 +138,7 @@ class ReversibleFlow(nn.Module):
                          ┃ x ┃
                          ┗━━━┛
   """
-  def __init__(self, dataset, num_blocks=1, num_layers_per_block=1, squeeze_factor=2, inner_var_cond=True, f:argchoice=[Network], permute:argchoice=[ReversePermutation], kl_div_log_frequency=1000):
+  def __init__(self, dataset, num_blocks=2, num_layers_per_block=10, squeeze_factor=2, inner_var_cond=False, f:argchoice=[Network], permute:argchoice=[ReversePermutation, NullPermutation], complex_log_frequency=100):
     self.__dict__.update(locals())
     super(ReversibleFlow, self).__init__()
     self.logprior = LogWhiteGaussian()
@@ -180,6 +146,8 @@ class ReversibleFlow(nn.Module):
                       for _ in range(num_blocks)])
     self.permutes = nn.ModuleList([nn.ModuleList([permute() for _ in range(num_layers_per_block)]) 
                       for _ in range(num_blocks)])
+
+    self.prior = LogWhiteGaussian()
 
     c, h, w = dataset[0][0].size()
     self.squeezes = nn.ModuleList([Squeeze(factor=squeeze_factor) for _ in range(num_blocks)])
@@ -190,6 +158,7 @@ class ReversibleFlow(nn.Module):
     self.forward(dataset[0][0].unsqueeze(0), *dataset[0][1:])
     self.test(dataset[0][0].unsqueeze(0), *dataset[0][1:])
 
+  @utils.profile
   def encode(self, x):
     loglikelihood_accum = 0
 
@@ -197,7 +166,7 @@ class ReversibleFlow(nn.Module):
     assert x.size(1) % 2 == 0, 'Input must have channels divisible by 2'
 
     zout = []
-    z = x
+    z = x.clone()
     for L in range(self.num_blocks):
       # squeeze
       z = self.squeezes[L](z)
@@ -206,14 +175,17 @@ class ReversibleFlow(nn.Module):
         # permute
         z = self.permutes[L][K](z)
 
-        # step of flow
         z1, z2 = torch.chunk(z, 2, dim=1)
-        scale, shift = self.networks[L][K](z1)
-        z2 += shift
-        z2 *= torch.exp(scale)
 
-        inner_var_adjustment = torch.log(z2.std()) + 1 / z2.std() if self.inner_var_cond else 0
-        loglikelihood_accum += scale.view(scale.size(0), -1).mean(1) - inner_var_adjustment
+        # step of flow
+        scale, shift = self.networks[L][K](z1)
+        safescale = torch.sigmoid(scale) * 2. + 0.01
+        logscale = torch.log(safescale)
+        z2 *= safescale
+        z2 += shift
+
+        inner_var_adjustment = (torch.log(z2.std()) + self.prior(z2.view(z2.size(0), -1)) * 1 / z2.std()) if self.inner_var_cond else 0
+        loglikelihood_accum += logscale.view(logscale.size(0), -1).mean(1) - inner_var_adjustment
 
         z = torch.cat([z1, z2], dim=1)
 
@@ -232,6 +204,7 @@ class ReversibleFlow(nn.Module):
     # of arguments as being pass-by-reference in python, so we create a seperate node
     loglikelihood_accum = log_likelihood + 0
 
+    zout = list(zout)
     z = zout.pop()
 
     for L in reversed(range(self.num_blocks)):
@@ -246,11 +219,13 @@ class ReversibleFlow(nn.Module):
         z1, z2 = torch.chunk(z, 2, dim=1)
 
         scale, shift = self.networks[L][K](z1)
-        z2 /= torch.exp(scale)
+        safescale = torch.sigmoid(scale) * 2. + 0.01
+        logscale = torch.log(safescale)
         z2 -= shift
-
+        z2 /= safescale
+        
         inner_var_adjustment = torch.log(z2.std()) + 1 / z2.std() if self.inner_var_cond else 0
-        loglikelihood_accum -= scale.view(scale.size(0), -1).mean(1) - inner_var_adjustment
+        loglikelihood_accum -= logscale.view(logscale.size(0), -1).mean(1) - inner_var_adjustment
 
         z = torch.cat([z1, z2], dim=1)
 
@@ -265,42 +240,77 @@ class ReversibleFlow(nn.Module):
   def test(self, x, y):
     z, logdet = self.encode(x)
     xhat, logdet_zero = self.decode(z, logdet)
-    assert (xhat - x).abs().max() < 1e-1, (xhat - x).abs().max().item()
+    assert (xhat - x).abs().max() < 1e-2, (xhat - x).abs().max().item()
     assert logdet_zero.abs().max() < 1e-1, logdet_zero.abs().max().item()
     #assert logdet.abs().sum() > 1e-3
 
+  @utils.profile
   def forward(self, x, y):
-    #x.normal_(0, 2)
+    #x.normal_(0, 3)
     z, loglikelihood_accum = self.encode(x)
 
     # flatten all the hierarchical layers
-    z = torch.cat([x.view(x.size(0), -1) for x in z], dim=1)
+    zcat = torch.cat([x.view(x.size(0), -1) for x in z], dim=1)
 
     n_bins = 2**8
     M = np.prod(x.shape[1:])
     discretization_correction = float(np.log(n_bins))
-    mean_log_likelihood = self.logprior(z) + .5 * loglikelihood_accum
+    mean_log_likelihood = self.logprior(zcat) + .5 * loglikelihood_accum
 
-    loss = -mean_log_likelihood #+ discretization_correction
+    loss = -mean_log_likelihood + discretization_correction
     loss /=  float(np.log(2.))
     loss = loss.mean()
+    assert not np.isnan(loss.item()), 'loss is nan'
+    
+    return loss, (zcat, z, loglikelihood_accum)
 
-    return loss, (z, loglikelihood_accum)
+  @utils.profile
+  def log(self, data, step, out, **kwargs):
+      zcat, z, loglikelihood_accum = out
 
-  def log(self, step, out, **kwargs):
-    z, loglikelihood_accum = out
-    if step % self.kl_div_log_frequency == 0:
-      D = z.view(z.size(0), -1).t().cpu().detach().numpy()
-      k, b = D.shape
-      P = D.dot(D.T) / b
+      stats = {'logdet': loglikelihood_accum.mean(),
+                'mean': zcat.mean(),
+                'std': zcat.std()}
 
-      kl_div = 0.5 * (-np.linalg.slogdet(P)[1] - k + np.trace(P))
+      # TODO: remove this ASAP
+      stats.update({'gmax': max([p.grad.abs().max() for p in self.parameters()]),
+                    'gnorm': max([p.grad.abs().norm() for p in self.parameters()])})
 
-      return {'kl_div': kl_div}
+      if step % self.complex_log_frequency == 0:        
+        # P = D.dot(D.T) / b
+        # if not hasattr(self, '_running_cov_estimate'):
+        #   self._running_estimate = np.eye(z.size(1))
+        # self._running_estimate =  .20 * P + .80 * self._running_estimate
 
-    grad = self.networks[0][0].net[0].weight.grad.abs().mean()
+        try:
+          D = zcat.t().cpu().detach().numpy()
+          D -= D.mean(0, keepdims=True)
+          k, b = D.shape
+          B = D.T.dot(D) / k
+          _, sv, _ = np.linalg.svd(B)
+          stats.update({
+                  'stats.sv': [sv.min(), sv.max(), sv.mean(), sv.var()],
+                  'ld.sv': sv.var() / D.var()**2 / (float(b) / float(k)) - 1})
+        except:
+          pass
 
-    return {'logdet': loglikelihood_accum.mean(),
-            'mean': z.mean(),
-            'std': z.std(),
-            'early_grad': grad}
+        # Test reconstruction accuracy
+        xhat, _ = self.decode(z) # Needs to be last, since decode works "inplace" on the input array
+        if (xhat - data[0]).abs().max() > 1e-2:
+          print('Reconstruction Error:', (xhat - data[0]).abs().max())
+
+        sample_z = [m.clone().normal_() * 0.7 for m in z]
+        [m[0].fill_(0) for m in sample_z]
+        sample_images, _ = self.decode(sample_z)
+          
+        stats.update({#'kl_div(P)':  0.5 * (-np.linalg.slogdet(P)[1] - k + np.trace(P)),
+                #'kl_div(B)':  0.5 * (-np.linalg.slogdet(B)[1] - b + np.trace(B)),
+                #'cov': np.abs(self._running_estimate - np.eye(z.size(1))).mean(),
+                'mean_image': sample_images[0, 0:1],
+                'sample': sample_images[1:6 if sample_images.size(0) > 6 else sample_images.size(0), 0:1],
+                'reconstructed': xhat[1:6 if zcat.size(0) > 6 else zcat.size(0), 0:1]
+                #'z': zcat,
+                #'zhist': zcat.view(-1)
+                })
+
+      return stats

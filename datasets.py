@@ -13,10 +13,10 @@ class Dataset(datasets.MNIST):
                            transforms.ToTensor(),
                            lambda x: torch.cat([x, x[0:1]], dim=0),
                            lambda x: x + torch.zeros_like(x).uniform_(0., 1./ 255.),
-                           transforms.Normalize((0.1307,), (0.3081,))
+                           transforms.Normalize((0.1715,), (0.2289,))
                        ]))
   def __len__(self):
   	if self.overfit:
-  		return 1
+  		return 32
   	else:
   		return super(Dataset, self).__len__()

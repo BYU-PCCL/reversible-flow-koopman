@@ -16,8 +16,8 @@ args.module('train_dataset', datasets)
 args.module('validation_dataset', datasets)
 args.module('trainer', trainer.Trainer)
 
-args.arguments(epochs=1, name='', batch_size=32, resume=False, resume_uid='', resume_tag='best', log_frequency=1, 
-               validation_frequency=5000, cuda=True, print_model=False, max_grad=3)
+args.arguments(epochs=1, name='', batch_size=32, resume=False, resume_uid='', resume_tag='best', log_frequency=10, 
+               validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=15)
 
 args.defaults({'optimizer.lr': 1e-4})
 
@@ -53,14 +53,14 @@ with utils.block('Model') as b:
 
 @utils.profile
 def main():
-  for (epoch, batch, steps), data in trainer(train_dataset, epochs=pargs.epochs, progress='Training', shuffle=True, batch_size=pargs.batch_size):
+  for (epoch, batch, steps, bar), data in trainer(train_dataset, epochs=pargs.epochs, progress='Training', shuffle=True, batch_size=pargs.batch_size):
     optimizer.zero_grad()
     model.train() if not model.training else None
     
     loss_value, out = model(*data)
     loss_value.backward()
 
-    if steps % pargs.log_frequency == 0:
+    if (steps + 1) % pargs.log_frequency == 0:
       trainer.log(steps,
                   loss=loss_value,
                   m=model.log(loss=loss_value, 
@@ -81,10 +81,12 @@ def main():
 
       if validation_loss > trainer.state_dict.get('best_validation_loss', 0):
         trainer.state_dict['best_validation_loss'] = validation_loss
-        trainer.checkpoint(model, 'best')
+        path = trainer.checkpoint(model, 'best')
+        bar.write('Checkpoint at {}: {}'.format(steps, path))
 
-    if batch == 0 and epoch != 0:
-      trainer.checkpoint(model, 'recent')
+    if (steps + 1) % pargs.checkpoint_frequency == 0:
+      path = trainer.checkpoint(model, 'recent')
+      bar.write('Checkpoint at {}: {}'.format(steps, path))
 
 main()
 
@@ -95,7 +97,6 @@ main()
 # TODO: complex pointwise multiply / dynamic system inference
 # TODO: args README
 # TODO: args @argignore and @arginclude
-# TODO: log it/s
 # TODO: experiment with normal_() again
 # TODO: experiment with a single dimension of data, the rest filled with zeros (low rank data)
 # TODO: why does negative scaling not seem to work as well?

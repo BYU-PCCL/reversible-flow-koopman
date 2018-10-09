@@ -40,7 +40,9 @@ class ReversePermutation(nn.Module):
     super(ReversePermutation, self).__init__()
 
   def forward(self, x, reverse=False):
-    return x.flip(1)
+    x1, x2 = torch.chunk(x, 2, dim=1)
+    return torch.cat([x2, x1], dim=1)
+    #return x.flip(1)
 
 class NullPermutation(nn.Module):
   def __init__(self):
@@ -138,7 +140,10 @@ class ReversibleFlow(nn.Module):
                          ┃ x ┃
                          ┗━━━┛
   """
-  def __init__(self, dataset, num_blocks=2, num_layers_per_block=10, squeeze_factor=2, inner_var_cond=False, f:argchoice=[Network], permute:argchoice=[ReversePermutation, NullPermutation], complex_log_frequency=100):
+  def __init__(self, dataset, num_blocks=2, num_layers_per_block=10, squeeze_factor=2, 
+               inner_var_cond=False, f:argchoice=[Network], permute:argchoice=[ReversePermutation, NullPermutation], 
+               complex_log_frequency=2):
+
     self.__dict__.update(locals())
     super(ReversibleFlow, self).__init__()
     self.logprior = LogWhiteGaussian()
@@ -148,6 +153,7 @@ class ReversibleFlow(nn.Module):
                       for _ in range(num_blocks)])
 
     self.prior = LogWhiteGaussian()
+    self._logcount = 0
 
     c, h, w = dataset[0][0].size()
     self.squeezes = nn.ModuleList([Squeeze(factor=squeeze_factor) for _ in range(num_blocks)])
@@ -246,7 +252,10 @@ class ReversibleFlow(nn.Module):
 
   @utils.profile
   def forward(self, x, y):
-    #x.normal_(0, 3)
+    #x.normal_(0, 1)
+    x.fill_(0)
+    x[:, 0, 0, 0].normal_()
+
     z, loglikelihood_accum = self.encode(x)
 
     # flatten all the hierarchical layers
@@ -266,51 +275,55 @@ class ReversibleFlow(nn.Module):
 
   @utils.profile
   def log(self, data, step, out, **kwargs):
-      zcat, z, loglikelihood_accum = out
+    self._logcount += 1
+    zcat, z, loglikelihood_accum = out
+
+    # TODO: remove this ASAP
+    # stats.update({'gmax': max([p.grad.abs().max() for p in self.parameters()]),
+    #               'gnorm': max([p.grad.abs().norm() for p in self.parameters()])})
+    stats = {}
+
+    if self._logcount % self.complex_log_frequency == 0:
 
       stats = {'logdet': loglikelihood_accum.mean(),
                 'mean': zcat.mean(),
                 'std': zcat.std()}
 
-      # TODO: remove this ASAP
-      stats.update({'gmax': max([p.grad.abs().max() for p in self.parameters()]),
-                    'gnorm': max([p.grad.abs().norm() for p in self.parameters()])})
 
-      if step % self.complex_log_frequency == 0:        
-        # P = D.dot(D.T) / b
-        # if not hasattr(self, '_running_cov_estimate'):
-        #   self._running_estimate = np.eye(z.size(1))
-        # self._running_estimate =  .20 * P + .80 * self._running_estimate
+      # P = D.dot(D.T) / b
+      # if not hasattr(self, '_running_cov_estimate'):
+      #   self._running_estimate = np.eye(z.size(1))
+      # self._running_estimate =  .20 * P + .80 * self._running_estimate
 
-        try:
-          D = zcat.t().cpu().detach().numpy()
-          D -= D.mean(0, keepdims=True)
-          k, b = D.shape
-          B = D.T.dot(D) / k
-          _, sv, _ = np.linalg.svd(B)
-          stats.update({
-                  'stats.sv': [sv.min(), sv.max(), sv.mean(), sv.var()],
-                  'ld.sv': sv.var() / D.var()**2 / (float(b) / float(k)) - 1})
-        except:
-          pass
+      try:
+        D = zcat.t().cpu().detach().numpy()
+        D -= D.mean(0, keepdims=True)
+        k, b = D.shape
+        B = D.T.dot(D) / k
+        _, sv, _ = np.linalg.svd(B)
+        stats.update({
+                'stats.sv': [sv.min(), sv.max(), sv.mean(), sv.var()],
+                'ld.sv': sv.var() / D.var()**2 / (float(b) / float(k)) - 1})
+      except:
+        pass
 
-        # Test reconstruction accuracy
-        xhat, _ = self.decode(z) # Needs to be last, since decode works "inplace" on the input array
-        if (xhat - data[0]).abs().max() > 1e-2:
-          print('Reconstruction Error:', (xhat - data[0]).abs().max())
+      # Test reconstruction accuracy
+      xhat, _ = self.decode(z) # Needs to be last, since decode works "inplace" on the input array
+      if (xhat - data[0]).abs().max() > 1e-2:
+        print('Reconstruction Error:', (xhat - data[0]).abs().max())
 
-        sample_z = [m.clone().normal_() * 0.7 for m in z]
-        [m[0].fill_(0) for m in sample_z]
-        sample_images, _ = self.decode(sample_z)
-          
-        stats.update({#'kl_div(P)':  0.5 * (-np.linalg.slogdet(P)[1] - k + np.trace(P)),
-                #'kl_div(B)':  0.5 * (-np.linalg.slogdet(B)[1] - b + np.trace(B)),
-                #'cov': np.abs(self._running_estimate - np.eye(z.size(1))).mean(),
-                'mean_image': sample_images[0, 0:1],
-                'sample': sample_images[1:6 if sample_images.size(0) > 6 else sample_images.size(0), 0:1],
-                'reconstructed': xhat[1:6 if zcat.size(0) > 6 else zcat.size(0), 0:1]
-                #'z': zcat,
-                #'zhist': zcat.view(-1)
-                })
+      sample_z = [m.clone().normal_() * 0.7 for m in z]
+      [m[0].fill_(0) for m in sample_z]
+      sample_images, _ = self.decode(sample_z)
 
-      return stats
+      stats.update({#'kl_div(P)':  0.5 * (-np.linalg.slogdet(P)[1] - k + np.trace(P)),
+              #'kl_div(B)':  0.5 * (-np.linalg.slogdet(B)[1] - b + np.trace(B)),
+              #'cov': np.abs(self._running_estimate - np.eye(z.size(1))).mean(),
+              'mean_image': sample_images[0, 0:1],
+              'sample': sample_images[1:6 if sample_images.size(0) > 6 else sample_images.size(0), 0:1],
+              'reconstructed': xhat[1:6 if zcat.size(0) > 6 else zcat.size(0), 0:1]
+              #'z': zcat,
+              #'zhist': zcat.view(-1)
+              })
+
+    return stats

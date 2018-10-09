@@ -56,7 +56,8 @@ class Trainer():
         trainer.run_duration = 0
         trainer.dataload_fraction = 0
         before_load = -1
-        with tqdm(range(epochs), desc='Epochs', disable=not show_progress or epochs == 1) as epochbar:
+        step = trainer.state_dict.get('epochs', 0) * len(dataloader)
+        with tqdm(range(trainer.state_dict.get('epochs', 0), epochs), desc='Epochs', disable=not show_progress or epochs == 1) as epochbar:
           for e in epochbar:
             trainer.state_dict['epoch'] = e
             with tqdm(dataloader, 
@@ -73,22 +74,22 @@ class Trainer():
                 
                 with torch.autograd.set_grad_enabled(grad):
                   with torch.autograd.set_detect_anomaly(trainer.debug) as stack:
-                    with torch.autograd.profiler.profile(utils.is_profile and trainer.state_dict.get('step', 0) >= trainer.profile_burnin, use_cuda=trainer.cuda) as prof:
+                    with torch.autograd.profiler.profile(utils.is_profile and step >= trainer.profile_burnin, use_cuda=trainer.cuda) as prof:
 
                       before_run = time.clock()
-                      yield (e, i, trainer.state_dict.get('step', 0)), data
+                      yield (e, i, step, bar), data
                       after_run = time.clock()
 
                       trainer.run_duration = profile_alpha * trainer.run_duration + (1 - profile_alpha) * (after_run - before_run)
                       trainer.dataload_fraction = trainer.load_duration / (trainer.run_duration + trainer.load_duration)
 
-                    if utils.is_profile and trainer.state_dict.get('step', 0) >= trainer.profile_burnin:
+                    if utils.is_profile and step >= trainer.profile_burnin:
                       bar.clear()
                       print(prof.key_averages().table('cpu_time_total'))
                       utils.profile.print_stats()
                       exit()
 
-                trainer.state_dict['step'] = trainer.state_dict.get('step', 0) + 1
+                step += 1
 
                 # only call trainer.postfix if the bar was updated
                 # this means the display is always 1 behind 
@@ -115,7 +116,7 @@ class Trainer():
     for label, value in newdict.items():
       if torch.is_tensor(value) and value.numel() == 1:
         self._last_log[label] = value.item()
-        self.writer.add_scalar(label, value.item(), t)
+        self.writer.add_scalar(label, value, t)
       
       elif torch.is_tensor(value) and len(value.size()) == 4:
         image = vutils.make_grid(value, normalize=True, scale_each=True)
@@ -176,7 +177,7 @@ class Trainer():
       torch.save(sd, path)
       raise type(e)('Interrupt recieved during save. Resaving.') from e
 
-    return True
+    return path
 
   def resume(self, model, *args, path=None, uid='', unique=True):
     filename = '.'.join(args) + '.pth.tar'

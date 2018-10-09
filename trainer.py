@@ -161,13 +161,20 @@ class Trainer():
     if not os.path.exists(self.savepath):
       os.makedirs(self.savepath)
     
-    # if folder has too many files (or is too large)
-    # delete oldest
     sd = {'checkpoint': model.state_dict(),
           'trainer': self.state_dict,
           'extra': kwargs}
 
-    torch.save(sd, path)
+    # try to save and handle exceptions by resaving
+    # we shouldn't use "finally" just in case torch.save
+    # needs to throw an exception
+    try:
+      torch.save(sd, path)
+    except BaseException as e:
+      if os.path.exists(path):
+        os.remove(path)
+      torch.save(sd, path)
+      raise type(e)('Interrupt recieved during save. Resaving.') from e
 
     return True
 
@@ -181,14 +188,14 @@ class Trainer():
     checkpoints.sort(key=os.path.getmtime)
 
     if len(checkpoints) == 0:
-      return False
+      raise Exception('No checkpoints found: {}'.format(path))
 
     if len(checkpoints) == 1 or unique == False:
       path = checkpoints[-1]
       sd = torch.load(path)
       model.load_state_dict(sd['checkpoint'])
       self.state_dict = sd['trainer']
-      return True
+      return path
       
     else:
-      raise IndexError('Checkpoint is not unique, but unique=True was specified')
+      raise Exception('Checkpoint is not unique, but unique=True was specified')

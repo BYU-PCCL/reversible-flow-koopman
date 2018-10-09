@@ -34,13 +34,10 @@ if pargs.cuda:
   trainer.cuda()
 
 if pargs.resume:
-  with utils.block('Resume') as b:
-    if trainer.resume(model, pargs.resume_tag, uid=pargs.resume_uid, unique=False):
-      b.print('Successfully Resumed')
-      b.print(trainer.state_dict)
-    else:
-      b.print('Resume requested, but could not resume')
-      exit()
+  with utils.block('Resume', exit_on_error=True) as b:
+    path = trainer.resume(model, pargs.resume_tag, uid=pargs.resume_uid, unique=False)
+    b.print('Successfully Resumed: {}'.format(path))
+    b.print(trainer.state_dict)
     
 with utils.block('Command') as b:
   b.print(pargs.command())
@@ -86,7 +83,8 @@ def main():
         trainer.state_dict['best_validation_loss'] = validation_loss
         trainer.checkpoint(model, 'best')
 
-    trainer.checkpoint(model, 'recent')
+    if batch == 0 and epoch != 0:
+      trainer.checkpoint(model, 'recent')
 
 main()
 
@@ -96,7 +94,6 @@ main()
 # TODO: handle "data:type=None" for args
 # TODO: complex pointwise multiply / dynamic system inference
 # TODO: args README
-# TODO: checkpoint and resume
 # TODO: args @argignore and @arginclude
 # TODO: log it/s
 # TODO: experiment with normal_() again

@@ -8,7 +8,8 @@ is_profile = 'profile' in builtins.__dict__
 profile = builtins.__dict__.get('profile', lambda x: x)
 
 class block(object):
-    def __init__(self, header, size=80):
+    def __init__(self, header, size=80, exit_on_error=False):
+        self.exit_on_error = True
         pre = size - len(header)
         pre //= 2
         post = pre
@@ -23,6 +24,8 @@ class block(object):
     def __exit__(self, type, value, traceback):
       if type is not None:
         print('[{}] {}'.format(type.__name__, value))
+        if self.exit_on_error:
+            exit()
       print()
 
 def gpustats():

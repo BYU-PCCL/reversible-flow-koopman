@@ -85,32 +85,8 @@ class LogWhiteGaussian(nn.Module):
     super(LogWhiteGaussian, self).__init__()
 
   def forward(self, z):
-    log_likelihood = -0.5 * (LogWhiteGaussian.log_2pi + ((z ** 2).view(z.size(0), -1).mean(1)))
+    log_likelihood = -0.5 * (LogWhiteGaussian.log_2pi + ((z ** 2).view(z.size(0), -1).sum(1)))
     return log_likelihood
-
-# class FlowStep(Layer):
-#     """
-#         One step of flow described in paper
-#                       ▲
-#                       │
-#         ┌─────────────┼─────────────┐
-#         │  ┌──────────┴──────────┐  │
-#         │  │ flow coupling layer │  │
-#         │  └──────────▲──────────┘  │
-#         │             │             │
-#         │  ┌──────────┴──────────┐  │
-#         │  │  flow permutation   │  │
-#         │  │        layer        │  │
-#         │  └──────────▲──────────┘  │
-#         │             │             │
-#         │  ┌──────────┴──────────┐  │
-#         │  │     activation      │  │
-#         │  │ normalization layer │  │
-#         │  └──────────▲──────────┘  │
-#         └─────────────┼─────────────┘
-#                       │
-#                       │
-#     """
 
 class ReversibleFlow(nn.Module):
   """
@@ -191,7 +167,7 @@ class ReversibleFlow(nn.Module):
         z2 += shift
 
         inner_var_adjustment = (torch.log(z2.std()) + self.prior(z2.view(z2.size(0), -1)) * 1 / z2.std()) if self.inner_var_cond else 0
-        loglikelihood_accum += logscale.view(logscale.size(0), -1).mean(1) - inner_var_adjustment
+        loglikelihood_accum += logscale.view(logscale.size(0), -1).sum(1) - inner_var_adjustment
 
         z = torch.cat([z1, z2], dim=1)
 
@@ -231,7 +207,7 @@ class ReversibleFlow(nn.Module):
         z2 /= safescale
         
         inner_var_adjustment = torch.log(z2.std()) + 1 / z2.std() if self.inner_var_cond else 0
-        loglikelihood_accum -= logscale.view(logscale.size(0), -1).mean(1) - inner_var_adjustment
+        loglikelihood_accum -= logscale.view(logscale.size(0), -1).sum(1) - inner_var_adjustment
 
         z = torch.cat([z1, z2], dim=1)
 
@@ -252,23 +228,21 @@ class ReversibleFlow(nn.Module):
 
   @utils.profile
   def forward(self, x, y):
-    #x.normal_(0, 1)
-    x.fill_(0)
-    x[:, 0, 0, 0].normal_()
-
+    # x.normal_(0, 1)
+    # x.fill_(0)
+    # sx[:, 0, 0, 0].normal_()
     z, loglikelihood_accum = self.encode(x)
-
-    # flatten all the hierarchical layers
     zcat = torch.cat([x.view(x.size(0), -1) for x in z], dim=1)
 
-    n_bins = 2**8
-    M = np.prod(x.shape[1:])
-    discretization_correction = float(np.log(n_bins))
-    mean_log_likelihood = self.logprior(zcat) + .5 * loglikelihood_accum
-
-    loss = -mean_log_likelihood + discretization_correction
-    loss /=  float(np.log(2.))
-    loss = loss.mean()
+    M = float(np.prod(x.shape[1:]))
+    discretization_correction = float(np.log(2**8)) * M
+    mean_log_likelihood = self.logprior(zcat) + loglikelihood_accum
+    loss = (-mean_log_likelihood + discretization_correction) / M
+    
+    # the following command requires a sync operation
+    # it should be as low in this function as possible
+    loss = loss.mean() / float(np.log(2.))
+    
     assert not np.isnan(loss.item()), 'loss is nan'
     
     return loss, (zcat, z, loglikelihood_accum)
@@ -276,19 +250,20 @@ class ReversibleFlow(nn.Module):
   @utils.profile
   def log(self, data, step, out, **kwargs):
     self._logcount += 1
+    x, y = data
     zcat, z, loglikelihood_accum = out
 
     # TODO: remove this ASAP
+    stats = {}
     # stats.update({'gmax': max([p.grad.abs().max() for p in self.parameters()]),
     #               'gnorm': max([p.grad.abs().norm() for p in self.parameters()])})
-    stats = {}
-
+    
     if self._logcount % self.complex_log_frequency == 0:
 
-      stats = {'logdet': loglikelihood_accum.mean(),
+      stats = {'logdet': loglikelihood_accum.mean() / float(np.prod(x.shape[1:])),
                 'mean': zcat.mean(),
-                'std': zcat.std()}
-
+                'std': zcat.std(),
+                'var(std)': zcat.std(0).var()}
 
       # P = D.dot(D.T) / b
       # if not hasattr(self, '_running_cov_estimate'):
@@ -311,8 +286,9 @@ class ReversibleFlow(nn.Module):
       xhat, _ = self.decode(z) # Needs to be last, since decode works "inplace" on the input array
       if (xhat - data[0]).abs().max() > 1e-2:
         print('Reconstruction Error:', (xhat - data[0]).abs().max())
+        raise Exception('Reconstruction error is too high. Investigate.')
 
-      sample_z = [m.clone().normal_() * 0.7 for m in z]
+      sample_z = [m.clone().normal_() * m.std(0).unsqueeze(0) * .7 for m in z]
       [m[0].fill_(0) for m in sample_z]
       sample_images, _ = self.decode(sample_z)
 

@@ -4,11 +4,12 @@ import torch
 from torchvision import datasets, transforms
 
 class Dataset(datasets.MNIST):
-  def __init__(self, root='/tmp/mnist', download=True, overfit=False):
+  def __init__(self, root='/tmp/mnist', train=True, download=True, overfit=False):
   	self.overfit = overfit
   	super(Dataset, self).__init__(
   		root, 
   		download=download, 
+      train=train,
   		transform=transforms.Compose([
                            transforms.ToTensor(),
                            lambda x: torch.cat([x, x[0:1]], dim=0),

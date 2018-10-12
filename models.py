@@ -147,6 +147,12 @@ class ReversibleFlow(nn.Module):
     # pad channels if not divisble by 2
     assert x.size(1) % 2 == 0, 'Input must have channels divisible by 2'
 
+    # constants to bound the scale
+    k = self.num_blocks * self.num_layers_per_block
+    b = 1e-3 # 10**(-4/k) # lower bound (the bottom)
+    m = 3 # 10**(6/k) # upper bound (the maximum)
+    sigmoid_shift = np.log((1 - b) / (m - 1))
+
     zout = []
     z = x.clone()
     for L in range(self.num_blocks):
@@ -161,12 +167,14 @@ class ReversibleFlow(nn.Module):
 
         # step of flow
         scale, shift = self.networks[L][K](z1)
-        safescale = torch.sigmoid(scale) * 2. + 0.01
+        safescale = (scale + 1).abs() + b
+        #safescale_squeeze = torch.sigmoid(scale + sigmoid_shift) * (m - b) + b
+        safescale = torch.min(safescale, m / (torch.abs(z2.detach()) + 0.00001))
         logscale = torch.log(safescale)
         z2 *= safescale
         z2 += shift
 
-        inner_var_adjustment = (torch.log(z2.std()) + self.prior(z2.view(z2.size(0), -1)) * 1 / z2.std()) if self.inner_var_cond else 0
+        inner_var_adjustment = (torch.log(z2.std()) + 1 / z2.std()) if self.inner_var_cond else 0
         loglikelihood_accum += logscale.view(logscale.size(0), -1).sum(1) - inner_var_adjustment
 
         z = torch.cat([z1, z2], dim=1)
@@ -186,6 +194,12 @@ class ReversibleFlow(nn.Module):
     # of arguments as being pass-by-reference in python, so we create a seperate node
     loglikelihood_accum = log_likelihood + 0
 
+    # constants to bound the scale
+    k = self.num_blocks * self.num_layers_per_block
+    b = 1e-3 # 10**(-4 / k) # lower bound (the bottom)
+    m = 3 # 10**(6 / k) # upper bound (the maximum)
+    sigmoid_shift = np.log((1 - b) / (m - 1))
+
     zout = list(zout)
     z = zout.pop()
 
@@ -201,7 +215,8 @@ class ReversibleFlow(nn.Module):
         z1, z2 = torch.chunk(z, 2, dim=1)
 
         scale, shift = self.networks[L][K](z1)
-        safescale = torch.sigmoid(scale) * 2. + 0.01
+        safescale = (scale + 1).abs() + b
+        #safescale = torch.sigmoid(scale + sigmoid_shift) * (m - b) + b
         logscale = torch.log(safescale)
         z2 -= shift
         z2 /= safescale
@@ -228,7 +243,7 @@ class ReversibleFlow(nn.Module):
 
   @utils.profile
   def forward(self, x, y):
-    # x.normal_(0, 1)
+    # x.normal_(0, .5)
     # x.fill_(0)
     # sx[:, 0, 0, 0].normal_()
     z, loglikelihood_accum = self.encode(x)
@@ -283,23 +298,20 @@ class ReversibleFlow(nn.Module):
         pass
 
       # Test reconstruction accuracy
-      xhat, _ = self.decode(z) # Needs to be last, since decode works "inplace" on the input array
-      if (xhat - data[0]).abs().max() > 1e-2:
-        print('Reconstruction Error:', (xhat - data[0]).abs().max())
-        raise Exception('Reconstruction error is too high. Investigate.')
+      # xhat, _ = self.decode(z) # Needs to be last, since decode works "inplace" on the input array
+      # if (xhat - data[0]).abs().max() > 1e-2:
+      #   print('Reconstruction Error:', (xhat - data[0]).abs().max())
+      #   raise Exception('Reconstruction error is too high. Investigate.')
 
-      sample_z = [m.clone().normal_() * m.std(0).unsqueeze(0) * .7 for m in z]
-      [m[0].fill_(0) for m in sample_z]
+      V = [v[:min(6, v.size(0))] for v in z]
+      sample_z = [v.clone().normal_() * v.std(0).unsqueeze(0) * .7 for v in V]
+      [v[0].fill_(0) for v in sample_z]
       sample_images, _ = self.decode(sample_z)
 
-      stats.update({#'kl_div(P)':  0.5 * (-np.linalg.slogdet(P)[1] - k + np.trace(P)),
-              #'kl_div(B)':  0.5 * (-np.linalg.slogdet(B)[1] - b + np.trace(B)),
-              #'cov': np.abs(self._running_estimate - np.eye(z.size(1))).mean(),
+      stats.update({
               'mean_image': sample_images[0, 0:1],
               'sample': sample_images[1:6 if sample_images.size(0) > 6 else sample_images.size(0), 0:1],
-              'reconstructed': xhat[1:6 if zcat.size(0) > 6 else zcat.size(0), 0:1]
-              #'z': zcat,
-              #'zhist': zcat.view(-1)
+              # 'reconstructed': xhat[1:6 if zcat.size(0) > 6 else zcat.size(0), 0:1]
               })
 
     return stats

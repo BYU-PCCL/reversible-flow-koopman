@@ -20,7 +20,7 @@ args.module('trainer', trainer.Trainer)
 args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='', log_frequency=10, 
                validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=40)
 
-args.defaults({'optimizer.lr': 1e-3})
+args.defaults({'optimizer.lr': 1e-4})
 
 pargs = args.reader()
 
@@ -109,6 +109,7 @@ main()
 # TODO: handle "data:type=None" for args
 # TODO: args README
 # TODO: args @argignore and @arginclude
+# TODO: boolean args with default=False should be "store_true" in addition to --arg=True
 
 # TODO: experiment with a single dimension of data, the rest filled with zeros (low rank data)
 # TODO: why does negative scaling not seem to work as well?

@@ -11,8 +11,10 @@ import torchvision.utils as vutils
 import numpy as np
 import builtins
 import os
+import sys
 import glob
 
+import traceback
 import pdb
 
 class Trainer():
@@ -115,49 +117,56 @@ class Trainer():
              } if isinstance(dd, dict) else { prefix : dd }
   
   def log(self, t, **kwargs):
-    if not hasattr(self, 'writer'):
-      self.writer = SummaryWriter(self.state_dict['logpath'])
-
-    newdict = self.flatten_dict(kwargs)
-    #self._last_log.update(newdict)
-    for label, value in newdict.items():
-      if torch.is_tensor(value) and value.numel() == 1:
-        self._last_log[label] = value.item()
-        self.writer.add_scalar(label, value, t)
-      
-      elif torch.is_tensor(value) and len(value.size()) == 4:
-        image = vutils.make_grid(value, normalize=True, scale_each=True)
-        self.writer.add_image(label, image, t)
-
-      elif torch.is_tensor(value) and len(value.size()) == 3:
-        self.writer.add_image(label, value, t)
-
-      elif torch.is_tensor(value) and len(value.size()) == 2:
-        pass
-      #   self.writer.add_embedding(value)
-
-      elif torch.is_tensor(value) and len(value.size()) == 1:
-        self.writer.add_histogram(label, value, t)
-
-      elif np.isscalar(value) and not isinstance(value, str):
-        self.writer.add_scalar(label, value, t)
-        self._last_log[label] = value
-      
-      elif np.isscalar(value) and isinstance(value, str):
-        import re
-        value = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -/]*[@-~]').sub('', ('\t' + value).replace('\n', '  \n\t'))
-        self.writer.add_text(label, value, t)
-
-      else:
-        self._last_log[label] = value
-
-    if self.profile_stats:
+    
+    if self.profile_stats or utils.is_profile:
       stats = utils.gpustats()
       self._last_log['maxmem'] = '{0:.1%}'.format(stats['maxmemusage'])
       self._last_log['maxutil'] = '{0:.0%}'.format(stats['maxutil'])
 
       if hasattr(self, 'dataload_fraction'):
         self._last_log['dperf'] = '{0:.1%}'.format(self.dataload_fraction)
+
+    newdict = self.flatten_dict(kwargs)
+    logtb = True
+    
+    if utils.is_profile or self.debug:
+      # don't log to tensorboard
+      logtb = False
+
+    if not hasattr(self, 'writer') and logtb:
+      self.writer = SummaryWriter(self.state_dict['logpath'])
+
+    #self._last_log.update(newdict)
+    for label, value in newdict.items():
+      if torch.is_tensor(value) and value.numel() == 1:
+        self._last_log[label] = value.item()
+        self.writer.add_scalar(label, value, t) if logtb else None
+      
+      elif torch.is_tensor(value) and len(value.size()) == 4:
+        image = vutils.make_grid(value, normalize=True, scale_each=True)
+        self.writer.add_image(label, image, t) if logtb else None
+
+      elif torch.is_tensor(value) and len(value.size()) == 3:
+        self.writer.add_image(label, value, t) if logtb else None
+
+      elif torch.is_tensor(value) and len(value.size()) == 2:
+        pass
+      #   self.writer.add_embedding(value)
+
+      elif torch.is_tensor(value) and len(value.size()) == 1:
+        self.writer.add_histogram(label, value, t) if logtb else None
+
+      elif np.isscalar(value) and not isinstance(value, str):
+        self.writer.add_scalar(label, value, t) if logtb else None
+        self._last_log[label] = value
+      
+      elif np.isscalar(value) and isinstance(value, str):
+        import re
+        value = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -/]*[@-~]').sub('', ('\t' + value).replace('\n', '  \n\t'))
+        self.writer.add_text(label, value, t) if logtb else None
+
+      else:
+        self._last_log[label] = value
   
   def checkpoint(self, model, optimizer, tag='checkpoint', resume=False, path=None, log=None, **kwargs):
     filename = tag + '.pth.tar'

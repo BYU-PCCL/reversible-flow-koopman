@@ -23,12 +23,14 @@ class Trainer():
     if 'postfix' not in kwargs:
       self.postfix = lambda: self._last_log
     
-    self.experiment_uid = '{:%m-%d-%H%M%S}'.format(datetime.now())
-    self.experiment_name = '{}-{}'.format(_logname, self.experiment_uid)
-    self.logpath = "{}{}".format(logdir, self.experiment_name)
-    self.savepath = "{}{}".format(savedir, self.experiment_name)
-    self.writer = SummaryWriter(self.logpath)
     self.state_dict = {}
+    self.state_dict['experiment_uid'] = '{:%m-%d-%H%M%S}'.format(datetime.now())
+    self.state_dict['experiment_name'] = '{}-{}'.format(_logname, self.state_dict['experiment_uid'])
+    self.state_dict.update({
+      'logpath': "{}{}".format(logdir, self.state_dict['experiment_name']),
+      'savepath': "{}{}".format(savedir, self.state_dict['experiment_name'])
+    })
+      
 
     torch.backends.cudnn.benchmark=benchmark
 
@@ -56,10 +58,12 @@ class Trainer():
         trainer.run_duration = 0
         trainer.dataload_fraction = 0
         before_load = -1
-        step = trainer.state_dict.get('epochs', 0) * len(dataloader)
-        with tqdm(range(trainer.state_dict.get('epochs', 0), epochs), desc='Epochs', disable=not show_progress or epochs == 1) as epochbar:
+        step = trainer.state_dict.get('step', 0)
+        init_epoch = trainer.state_dict.get('epoch', 0)
+        with tqdm(range(init_epoch, epochs), desc='Epochs', disable=not show_progress or epochs == 1, initial=init_epoch, total=epochs) as epochbar:
           for e in epochbar:
             trainer.state_dict['epoch'] = e
+
             with tqdm(dataloader, 
                       disable=not show_progress,
                       desc=progress, leave=leave) as bar:
@@ -111,6 +115,9 @@ class Trainer():
              } if isinstance(dd, dict) else { prefix : dd }
   
   def log(self, t, **kwargs):
+    if not hasattr(self, 'writer'):
+      self.writer = SummaryWriter(self.state_dict['logpath'])
+
     newdict = self.flatten_dict(kwargs)
     #self._last_log.update(newdict)
     for label, value in newdict.items():
@@ -152,17 +159,15 @@ class Trainer():
       if hasattr(self, 'dataload_fraction'):
         self._last_log['dperf'] = '{0:.1%}'.format(self.dataload_fraction)
   
-  def checkpoint(self, model, *args, resume=False, path=None, **kwargs):
-    if len(args) == 0 and len(kwargs) == 0:
-      args = ['checkpoint']
+  def checkpoint(self, model, optimizer, tag='checkpoint', resume=False, path=None, log=None, **kwargs):
+    filename = tag + '.pth.tar'
+    path = os.path.join(self.state_dict['savepath'], filename) if path is None else path
 
-    filename = '.'.join(args) + '.pth.tar'
-    path = os.path.join(self.savepath, filename) if path is None else path
+    if not os.path.exists(self.state_dict['savepath']):
+      os.makedirs(self.state_dict['savepath'])
 
-    if not os.path.exists(self.savepath):
-      os.makedirs(self.savepath)
-    
-    sd = {'checkpoint': model.state_dict(),
+    sd = {'model': model.state_dict(),
+          'optimizer': optimizer.state_dict(),
           'trainer': self.state_dict,
           'extra': kwargs}
 
@@ -177,14 +182,17 @@ class Trainer():
       torch.save(sd, path)
       raise type(e)('Interrupt recieved during save. Resaving.') from e
 
+    if log is not None:
+      log('Checkpoint at {}: {}'.format(self.state_dict.get('step', None), path))
+
     return path
 
-  def resume(self, model, *args, path=None, uid='', unique=True):
+  def resume(self, model, optimizer, *args, path=None, uid='', unique=True):
     filename = '.'.join(args) + '.pth.tar'
     if path is None:
-      path = os.path.join(self.savepath, filename)
-      path = path.replace(self.experiment_uid if uid == '' else uid, '*')
-
+      path = os.path.join(self.state_dict['savepath'], filename)
+      path = path.replace(self.state_dict['experiment_name'], '*' if uid == '' else uid)
+      
     checkpoints = glob.glob(path)
     checkpoints.sort(key=os.path.getmtime)
 
@@ -194,7 +202,9 @@ class Trainer():
     if len(checkpoints) == 1 or unique == False:
       path = checkpoints[-1]
       sd = torch.load(path)
-      model.load_state_dict(sd['checkpoint'])
+      model.load_state_dict(sd['model'])
+      optimizer.load_state_dict(sd['optimizer'])
+
       self.state_dict = sd['trainer']
       return path
       

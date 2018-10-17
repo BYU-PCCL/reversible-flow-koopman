@@ -35,6 +35,23 @@ class Network(nn.Module):
 
     return scale, shift
 
+class LinearNetwork(Network):
+   def lazy_init(self, x):
+    if not hasattr(self, '_initialized'):
+      self._initialized = True
+      b, c, h, w = x.size()
+
+      self.net = nn.Sequential(
+        nn.Conv2d(c, self.hidden, 5, stride=1, padding=2),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(self.hidden, self.hidden, 1, stride=1, padding=0),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(self.hidden, c * 2, 5, stride=1, padding=2))
+
+      # initalize with these
+      self.net[-1].weight.data.fill_(0)
+      self.net[-1].bias.data.fill_(0)
+
 class ReversePermutation(nn.Module):
   def __init__(self):
     super(ReversePermutation, self).__init__()
@@ -85,8 +102,122 @@ class LogWhiteGaussian(nn.Module):
     super(LogWhiteGaussian, self).__init__()
 
   def forward(self, z):
-    log_likelihood = -0.5 * (LogWhiteGaussian.log_2pi + ((z ** 2).view(z.size(0), -1).sum(1)))
-    return log_likelihood
+    log_likelihood = -0.5 * (LogWhiteGaussian.log_2pi + ((z ** 2)))
+    return log_likelihood.view(z.size(0), -1).sum(1)
+
+class Clamp(torch.autograd.Function):
+  @staticmethod
+  def forward(ctx, input, min, max):
+    ctx.save_for_backward(input, max)
+    return torch.min(input, max)
+
+  @staticmethod
+  def backward(ctx, grad_output):
+    input, max = ctx.saved_tensors
+    return torch.where((input > max) & (grad_output < 0),  grad_output * 0 + 10, grad_output), None, None
+
+class SigmoidShiftScaler(nn.Module):
+  def __init__(self, b=0.001, m=2):
+    self.__dict__.update(locals())
+    super(SigmoidShiftScaler, self).__init__()
+    self.sigmoid_shift = np.log((1 - self.b) / (self.m - 1))
+
+  def forward(self, scale, z):
+    return torch.sigmoid(scale + self.sigmoid_shift) * (self.m - self.b) + self.b
+
+class GlowShift(nn.Module):
+  def forward(self, scale, z):
+    return torch.sigmoid(scale + 2)
+
+class ClampScaler(nn.Module):
+  def __init__(self, b=0.001, m=2):
+    self.__dict__.update(locals())
+    super(ClampScaler, self).__init__()
+
+  def forward(self, scale, z):
+    return torch.min(safescale, self.m / (torch.abs(z2.detach()) + self.b))
+
+class FreeScaler(nn.Module):
+  def __init__(self, b=0.001, m=2):
+    self.__dict__.update(locals())
+    super(FreeScaler, self).__init__()
+
+  def forward(self, scale, z):
+    return (scale + 1 - self.b).abs() + self.b 
+
+class AdditiveOnlyShiftScaler(nn.Module):
+  def __init__(self, c=1):
+    self.__dict__.update(locals())
+    super(SafeScale, self).__init__()
+
+  def forward(self, scale, z):
+    return self.c
+
+class ActNorm(nn.Module):
+  def lazy_init(self, x):
+    if not hasattr(self, '_initialized'):
+      self._initialized = True
+
+      b, c, h, w = x.size()
+      self.bias = nn.Parameter(torch.zeros(1, c, 1, 1))
+      self.logs = nn.Parameter(torch.zeros(1, c, 1, 1))
+
+      bias = -x.sum(dim=[0, 2, 3], keepdim=True) / (b * h * w)
+      variance = ((x + bias) ** 2).sum(dim=[0, 2, 3], keepdim=True) / (b * h * w)
+      logs = -torch.log(torch.sqrt(variance) + 1e-6)
+      self.bias.data.copy_(bias.data)
+      self.logs.data.copy_(logs.data)
+
+
+  def forward(self, x, reverse=False):
+    self.lazy_init(x)
+
+    b, c, h, w = x.size()
+
+    if not reverse:
+      x += self.bias
+      x *= torch.exp(self.logs)
+    else:
+      pass
+      x /= torch.exp(self.logs)
+      x -= self.bias
+
+    logdet = self.logs.sum(dim=[1,2,3]) * (h * w)
+    return x, logdet
+
+class AffineFlowStep(nn.Module):
+  def __init__(self, f:argchoice=[Network, LinearNetwork], 
+                     safescaler:argchoice=[SigmoidShiftScaler, AdditiveOnlyShiftScaler, ClampScaler, FreeScaler, GlowShift]):
+    self.__dict__.update(locals())
+    super(AffineFlowStep, self).__init__()
+    self.f = f()
+    self.safescaler = safescaler()
+    self.actnorm = ActNorm()
+
+  @utils.profile
+  def forward(self, z, reverse=False):
+    z1, z2 = torch.chunk(z, 2, dim=1)
+
+    scale, shift = self.f(z1)
+    safescale = self.safescaler(scale, z2)
+    logscale = torch.log(safescale)
+    logdet = logscale.view(logscale.size(0), -1).sum(1)
+
+    if not reverse:
+      z2, logdet_actnorm = self.actnorm(z2)
+      z2 += shift
+      z2 *= safescale
+      logdet += logdet_actnorm
+
+    else:
+      z2 /= safescale
+      z2 -= shift
+      z2, logdet_actnorm = self.actnorm(z2, reverse=True)
+      logdet += logdet_actnorm
+
+    z = torch.cat([z1, z2], dim=1)
+
+    return z, logdet
 
 class ReversibleFlow(nn.Module):
   """
@@ -116,28 +247,29 @@ class ReversibleFlow(nn.Module):
                          ┃ x ┃
                          ┗━━━┛
   """
-  def __init__(self, dataset, num_blocks=2, num_layers_per_block=10, squeeze_factor=2, 
-               inner_var_cond=False, f:argchoice=[Network], permute:argchoice=[ReversePermutation, NullPermutation], 
-               complex_log_frequency=2):
+  def __init__(self, dataset, num_blocks=3, num_layers_per_block=32, squeeze_factor=2, 
+               inner_var_cond=False, 
+               prior:argchoice=[LogWhiteGaussian],
+               flow:argchoice=[AffineFlowStep], 
+               permute:argchoice=[ReversePermutation, NullPermutation]):
 
     self.__dict__.update(locals())
     super(ReversibleFlow, self).__init__()
-    self.logprior = LogWhiteGaussian()
-    self.networks = nn.ModuleList([nn.ModuleList([f() for _ in range(num_layers_per_block)]) 
-                      for _ in range(num_blocks)])
+    self.logprior = prior()
+    
     self.permutes = nn.ModuleList([nn.ModuleList([permute() for _ in range(num_layers_per_block)]) 
                       for _ in range(num_blocks)])
-
-    self.prior = LogWhiteGaussian()
-    self._logcount = 0
-
-    c, h, w = dataset[0][0].size()
+    self.flows = nn.ModuleList([nn.ModuleList([flow() for _ in range(num_layers_per_block)]) 
+                      for _ in range(num_blocks)])
     self.squeezes = nn.ModuleList([Squeeze(factor=squeeze_factor) for _ in range(num_blocks)])
+    
+    # A little test ot see if we will run into any problems
+    c, h, w = dataset[0][0].size()
     assert (h / squeeze_factor**num_blocks) % 1 == 0, 'height {} is not divisible by {}^{}'.format(h, squeeze_factor, num_blocks)
     assert (w / squeeze_factor**num_blocks) % 1 == 0, 'width {} is not divisible by {}^{}'.format(w, squeeze_factor, num_blocks)
     
     # stoke lazy-initialization
-    self.forward(dataset[0][0].unsqueeze(0), *dataset[0][1:])
+    self.forward(-1, dataset[0][0].unsqueeze(0), *dataset[0][1:])
     self.test(dataset[0][0].unsqueeze(0), *dataset[0][1:])
 
   @utils.profile
@@ -147,14 +279,9 @@ class ReversibleFlow(nn.Module):
     # pad channels if not divisble by 2
     assert x.size(1) % 2 == 0, 'Input must have channels divisible by 2'
 
-    # constants to bound the scale
-    k = self.num_blocks * self.num_layers_per_block
-    b = 1e-3 # 10**(-4/k) # lower bound (the bottom)
-    m = 3 # 10**(6/k) # upper bound (the maximum)
-    sigmoid_shift = np.log((1 - b) / (m - 1))
-
     zout = []
     z = x.clone()
+
     for L in range(self.num_blocks):
       # squeeze
       z = self.squeezes[L](z)
@@ -163,21 +290,8 @@ class ReversibleFlow(nn.Module):
         # permute
         z = self.permutes[L][K](z)
 
-        z1, z2 = torch.chunk(z, 2, dim=1)
-
-        # step of flow
-        scale, shift = self.networks[L][K](z1)
-        safescale = (scale + 1).abs() + b
-        #safescale_squeeze = torch.sigmoid(scale + sigmoid_shift) * (m - b) + b
-        safescale = torch.min(safescale, m / (torch.abs(z2.detach()) + 0.00001))
-        logscale = torch.log(safescale)
-        z2 *= safescale
-        z2 += shift
-
-        inner_var_adjustment = (torch.log(z2.std()) + 1 / z2.std()) if self.inner_var_cond else 0
-        loglikelihood_accum += logscale.view(logscale.size(0), -1).sum(1) - inner_var_adjustment
-
-        z = torch.cat([z1, z2], dim=1)
+        z, logdet = self.flows[L][K](z)
+        loglikelihood_accum += logdet
 
       # split hierarchical 
       z1, z2 = torch.chunk(z, 2, dim=1)
@@ -194,12 +308,6 @@ class ReversibleFlow(nn.Module):
     # of arguments as being pass-by-reference in python, so we create a seperate node
     loglikelihood_accum = log_likelihood + 0
 
-    # constants to bound the scale
-    k = self.num_blocks * self.num_layers_per_block
-    b = 1e-3 # 10**(-4 / k) # lower bound (the bottom)
-    m = 3 # 10**(6 / k) # upper bound (the maximum)
-    sigmoid_shift = np.log((1 - b) / (m - 1))
-
     zout = list(zout)
     z = zout.pop()
 
@@ -214,17 +322,8 @@ class ReversibleFlow(nn.Module):
         #reverse flow step
         z1, z2 = torch.chunk(z, 2, dim=1)
 
-        scale, shift = self.networks[L][K](z1)
-        safescale = (scale + 1).abs() + b
-        #safescale = torch.sigmoid(scale + sigmoid_shift) * (m - b) + b
-        logscale = torch.log(safescale)
-        z2 -= shift
-        z2 /= safescale
-        
-        inner_var_adjustment = torch.log(z2.std()) + 1 / z2.std() if self.inner_var_cond else 0
-        loglikelihood_accum -= logscale.view(logscale.size(0), -1).sum(1) - inner_var_adjustment
-
-        z = torch.cat([z1, z2], dim=1)
+        z, logdet = self.flows[L][K](z, reverse=True)
+        loglikelihood_accum -= logdet
 
         # unpermute
         z = self.permutes[L][K](z, reverse=True)
@@ -242,49 +341,44 @@ class ReversibleFlow(nn.Module):
     #assert logdet.abs().sum() > 1e-3
 
   @utils.profile
-  def forward(self, x, y):
-    # x.normal_(0, .5)
+  def forward(self, step, x, y):
+    #x.normal_(0, 0)
     # x.fill_(0)
     # sx[:, 0, 0, 0].normal_()
+
     z, loglikelihood_accum = self.encode(x)
     zcat = torch.cat([x.view(x.size(0), -1) for x in z], dim=1)
 
     M = float(np.prod(x.shape[1:]))
-    discretization_correction = float(np.log(2**8)) * M
-    mean_log_likelihood = self.logprior(zcat) + loglikelihood_accum
-    loss = (-mean_log_likelihood + discretization_correction) / M
+    discretization_correction = float(-np.log(256)) * M
+    log_likelihood = self.logprior(zcat) + loglikelihood_accum #+ discretization_correction
+    loss = -log_likelihood
     
     # the following command requires a sync operation
     # it should be as low in this function as possible
-    loss = loss.mean() / float(np.log(2.))
-    
-    assert not np.isnan(loss.item()), 'loss is nan'
+    loss = loss.mean() / float(np.log(2.) * M)
+    #assert not np.isnan(loss.item()), 'loss is nan'
     
     return loss, (zcat, z, loglikelihood_accum)
 
   @utils.profile
-  def log(self, data, step, out, **kwargs):
-    self._logcount += 1
+  def logger(self, step, data, out):
     x, y = data
     zcat, z, loglikelihood_accum = out
 
-    # TODO: remove this ASAP
     stats = {}
-    # stats.update({'gmax': max([p.grad.abs().max() for p in self.parameters()]),
-    #               'gnorm': max([p.grad.abs().norm() for p in self.parameters()])})
-    
-    if self._logcount % self.complex_log_frequency == 0:
+    stats.update({'logdet': loglikelihood_accum.mean() / float(np.prod(x.shape[1:])),
+              'mean': zcat.mean(),
+              'std': zcat.std(),
+              'var(std)': zcat.std(0).var()})
 
-      stats = {'logdet': loglikelihood_accum.mean() / float(np.prod(x.shape[1:])),
-                'mean': zcat.mean(),
-                'std': zcat.std(),
-                'var(std)': zcat.std(0).var()}
-
-      # P = D.dot(D.T) / b
-      # if not hasattr(self, '_running_cov_estimate'):
-      #   self._running_estimate = np.eye(z.size(1))
-      # self._running_estimate =  .20 * P + .80 * self._running_estimate
-
+    # P = D.dot(D.T) / b
+    # if not hasattr(self, '_running_cov_estimate'):
+    #   self._running_estimate = np.eye(z.size(1))
+    # self._running_estimate =  .20 * P + .80 * self._running_estimate
+    if step % 100 == 0:
+      stats.update({'gmax': max([p.grad.abs().max() for p in self.parameters()]),
+                    'gnorm': max([p.grad.abs().norm() for p in self.parameters()])})
       try:
         D = zcat.t().cpu().detach().numpy()
         D -= D.mean(0, keepdims=True)
@@ -304,14 +398,13 @@ class ReversibleFlow(nn.Module):
       #   raise Exception('Reconstruction error is too high. Investigate.')
 
       V = [v[:min(6, v.size(0))] for v in z]
-      sample_z = [v.clone().normal_() * v.std(0).unsqueeze(0) * .7 for v in V]
+      sample_z = [v.clone().normal_() * v.std(0).unsqueeze(0) for v in V]
       [v[0].fill_(0) for v in sample_z]
       sample_images, _ = self.decode(sample_z)
 
       stats.update({
               'mean_image': sample_images[0, 0:1],
-              'sample': sample_images[1:6 if sample_images.size(0) > 6 else sample_images.size(0), 0:1],
-              # 'reconstructed': xhat[1:6 if zcat.size(0) > 6 else zcat.size(0), 0:1]
+              'sample': sample_images[1:, 0:1],
               })
 
     return stats

@@ -68,7 +68,7 @@ class Trainer():
 
             with tqdm(dataloader, 
                       disable=not show_progress,
-                      desc=progress, leave=leave) as bar:
+                      desc=progress, leave=leave, smoothing=1) as bar:
               
               for i, data in enumerate(bar):
                 if trainer.cuda:
@@ -169,32 +169,33 @@ class Trainer():
         self._last_log[label] = value
   
   def checkpoint(self, model, optimizer, tag='checkpoint', resume=False, path=None, log=None, **kwargs):
-    filename = tag + '.pth.tar'
-    path = os.path.join(self.state_dict['savepath'], filename) if path is None else path
+    if not utils.is_profile and not self.debug:
+      filename = tag + '.pth.tar'
+      path = os.path.join(self.state_dict['savepath'], filename) if path is None else path
 
-    if not os.path.exists(self.state_dict['savepath']):
-      os.makedirs(self.state_dict['savepath'])
+      if not os.path.exists(self.state_dict['savepath']):
+        os.makedirs(self.state_dict['savepath'])
 
-    sd = {'model': model.state_dict(),
-          'optimizer': optimizer.state_dict(),
-          'trainer': self.state_dict,
-          'extra': kwargs}
+      sd = {'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'trainer': self.state_dict,
+            'extra': kwargs}
 
-    # try to save and handle exceptions by resaving
-    # we shouldn't use "finally" just in case torch.save
-    # needs to throw an exception
-    try:
-      torch.save(sd, path)
-    except BaseException as e:
-      if os.path.exists(path):
-        os.remove(path)
-      torch.save(sd, path)
-      raise type(e)('Interrupt recieved during save. Resaving.') from e
+      # try to save and handle exceptions by resaving
+      # we shouldn't use "finally" just in case torch.save
+      # needs to throw an exception
+      try:
+        torch.save(sd, path)
+      except BaseException as e:
+        if os.path.exists(path):
+          os.remove(path)
+        torch.save(sd, path)
+        raise type(e)('Interrupt recieved during save. Resaving.') from e
 
-    if log is not None:
-      log('Checkpoint at {}: {}'.format(self.state_dict.get('step', None), path))
+      if log is not None:
+        log('Checkpoint at {}: {}'.format(self.state_dict.get('step', None), path))
 
-    return path
+      return path
 
   def resume(self, model, optimizer, *args, path=None, uid='', unique=True):
     filename = '.'.join(args) + '.pth.tar'

@@ -11,11 +11,14 @@ class Dataset(datasets.MNIST):
   		download=download, 
       train=train,
   		transform=transforms.Compose([
+                           transforms.Resize((32,32)),
                            transforms.ToTensor(),
                            lambda x: torch.cat([x, x[0:1]], dim=0),
+                           #lambda x: x + torch.normal(mean=torch.zeros_like(x), std=torch.ones_like(x) * (1. / 256.))
                            lambda x: x + torch.zeros_like(x).uniform_(0., 1./ 255.),
-                           transforms.Normalize((0.1715,), (0.2289,))
+                           #transforms.Normalize((0.1715,), (1.0,))
                        ]))
+
   def __len__(self):
   	if self.overfit:
   		return 32

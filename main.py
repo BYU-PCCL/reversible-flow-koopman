@@ -4,6 +4,7 @@ from libs.args.args import argchoice
 import torch
 import models
 import datasets
+import schedules
 import trainer
 
 import inspect
@@ -13,13 +14,14 @@ import atexit
 
 #from apex import amp
 
-args.module('model', models.ReversibleFlow)
+args.module('model', models.EncodeStateDirectly)
 args.module('optimizer', torch.optim, default=torch.optim.Adam)
 args.module('train_dataset', datasets)
 args.module('validation_dataset', datasets)
 args.module('trainer', trainer.Trainer)
+args.module('scheduler', schedules)
 
-args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='', log_frequency=10, 
+args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='',
                validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=5, max_grad_norm=100, amp=True)
 
 args.defaults({'optimizer.lr': 1e-4})
@@ -31,6 +33,7 @@ validation_dataset = pargs.validation_dataset(train=False)
 model = torch.nn.DataParallel(pargs.model(train_dataset))
 optimizer = pargs.optimizer(model.parameters())
 trainer = pargs.trainer(_logname=pargs.stub())
+scheduler = pargs.scheduler(optimizer)
 
 if pargs.cuda:
   model.cuda()
@@ -70,16 +73,13 @@ def main():
     model.train() if not model.training else None
 
     loss_value, out = model(step, *data)
-    loss_value = loss_value.mean()
+    loss_value = loss_value.mean() # multi-gpu accumulation
 
     loss_value.backward()
     #with amp_handle.scale_loss(loss_value, optimizer) as scaled_loss:
     #  scaled_loss.backward()
 
-    if step % pargs.log_frequency == 0:
-      trainer.log(step,
-                  loss=loss_value,
-                  m=model.module.logger(step, data, out))
+    trainer.log(step, loss=loss_value, m=model.module.logger(step, data, out))
     
     if step % pargs.validation_frequency == 0 and step != 0:
       model.eval()
@@ -99,10 +99,12 @@ def main():
         trainer.state_dict['best_training_loss'] = trainer.state_dict['running_training_loss']
         path = trainer.checkpoint(model, optimizer, tag='best_training', log=bar.write)
 
-    
     torch.nn.utils.clip_grad_value_(model.parameters(), pargs.max_grad)
     torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
     optimizer.step()
+
+    if scheduler.step(step):
+      trainer.log(step, lr=scheduler.lr(step))
 
 main()
 
@@ -120,11 +122,10 @@ main()
 # TODO: why does negative scaling not seem to work as well?
 
 
-# squish function tests
-# log random projection normalcy
 # fft?
 # create dynamic system dataset
 # nail down math
 # rewrite checkpointing api
+
 
 print()

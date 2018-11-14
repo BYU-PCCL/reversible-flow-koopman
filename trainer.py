@@ -18,7 +18,7 @@ import traceback
 import pdb
 
 class Trainer():
-  def __init__(self, logdir='./logs/', savedir='./checkpoints/', _logname='exp', debug=False, benchmark=True, profile_burnin=200, profile_stats=False, num_workers=5, pin_memory=True, **kwargs):
+  def __init__(self, logdir='./logs/', savedir='./checkpoints/', _logname='exp', debug=False, benchmark=True, profile_burnin=10, profile_stats=False, num_workers=5, pin_memory=True, **kwargs):
     self.__dict__.update(locals())
     self.__dict__.update(kwargs)
     self._last_log = {}
@@ -38,7 +38,7 @@ class Trainer():
 
   def cuda(self):
     self.cuda = True
-  
+
   def __call__(self, dataset, epochs=1, train=False, progress=None, leave=True, profile_alpha=.90, grad=True, **kwargs):
     trainer = self
     dkwargs = {'num_workers': self.num_workers, 
@@ -99,8 +99,8 @@ class Trainer():
 
                 # only call trainer.postfix if the bar was updated
                 # this means the display is always 1 behind 
-                if progress and bar.last_print_n == i:
-                  bar.set_postfix(**trainer.postfix(), refresh=False)
+                if show_progress and bar.last_print_n == i:
+                  bar.set_postfix(**trainer.postfix(), refresh=True)
 
                 before_load = time.clock()
 
@@ -117,7 +117,6 @@ class Trainer():
              } if isinstance(dd, dict) else { prefix : dd }
   
   def log(self, t, **kwargs):
-    
     if self.profile_stats or utils.is_profile:
       stats = utils.gpustats()
       self._last_log['maxmem'] = '{0:.1%}'.format(stats['maxmemusage'])

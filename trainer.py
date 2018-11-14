@@ -18,7 +18,7 @@ import traceback
 import pdb
 
 class Trainer():
-  def __init__(self, logdir='./logs/', savedir='./checkpoints/', _logname='exp', debug=False, benchmark=True, profile_burnin=10, profile_stats=False, num_workers=5, pin_memory=True, **kwargs):
+  def __init__(self, logdir='./logs/', savedir='./checkpoints/', _logname='exp', debug=False, benchmark=True, profile_burnin=100, profile_stats=False, num_workers=5, pin_memory=True, **kwargs):
     self.__dict__.update(locals())
     self.__dict__.update(kwargs)
     self._last_log = {}

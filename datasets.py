@@ -27,7 +27,7 @@ class MnistDataset(datasets.MNIST):
 
 
 class LTI2DSequence(torch.utils.data.Dataset):
-  def __init__(self, train=True, size=10000, sequence_length=3, channels=4, state_dim=64 + 15, observation_dim=64):
+  def __init__(self, train=True, size=10000, sequence_length=4, channels=4, state_dim=64 + 15, observation_dim=64):
     self.__dict__.update(locals())
     rand_state = np.random.get_state()
     np.random.seed(42)

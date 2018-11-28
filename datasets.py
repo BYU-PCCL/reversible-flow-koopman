@@ -34,10 +34,11 @@ class LTI2DSequence(torch.utils.data.Dataset):
     self.state_dim = state_dim * channels
     self.observation_dim = observation_dim * channels
     self.A = np.random.randn(self.state_dim, self.state_dim)
+    self.A = np.eye(self.state_dim)
     self.C = np.zeros([self.observation_dim, self.state_dim])
     self.C[:self.observation_dim, :self.observation_dim] = np.eye(self.observation_dim)
     self.x0 = np.random.randn(size, self.state_dim)
-    self.state_noise = np.random.randn(self.sequence_length, self.state_dim)
+    # self.state_noise = np.random.randn(self.sequence_length, self.state_dim)
     np.random.set_state(rand_state)
 
   def __getitem__(self, idx):
@@ -49,9 +50,9 @@ class LTI2DSequence(torch.utils.data.Dataset):
       obs[t] = y
 
     k = int(np.sqrt(self.observation_dim / self.channels))
-    obs = obs.reshape(self.sequence_length, self.channels, k, k).astype(np.float32) / 100
+    obs = obs.reshape(self.sequence_length, self.channels, k, k).astype(np.float32)
 
     return torch.from_numpy(obs), torch.from_numpy(obs[-1])
 
   def __len__(self):
-    return self.x0.shape[0]
+    return 32 #self.x0.shape[0]

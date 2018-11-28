@@ -15,7 +15,7 @@ import atexit
 #from apex import amp
 
 args.module('model', models.EncodeStateDirectly)
-args.module('optimizer', torch.optim, default=torch.optim.Adam)
+args.module('optimizer', torch.optim, default=torch.optim.SGD)
 args.module('train_dataset', datasets)
 args.module('validation_dataset', datasets)
 args.module('trainer', trainer.Trainer)
@@ -24,7 +24,7 @@ args.module('scheduler', schedules)
 args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='',
                validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=5, max_grad_norm=100, amp=True)
 
-args.defaults({'optimizer.lr': 1e-4})
+args.defaults({'optimizer.lr': .1})
 
 pargs = args.reader()
 
@@ -99,8 +99,8 @@ def main():
         trainer.state_dict['best_training_loss'] = trainer.state_dict['running_training_loss']
         path = trainer.checkpoint(model, optimizer, tag='best_training', log=bar.write)
 
-    torch.nn.utils.clip_grad_value_(model.parameters(), pargs.max_grad)
-    torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
+    # torch.nn.utils.clip_grad_value_(model.parameters(), pargs.max_grad)
+    # torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
     optimizer.step()
 
     if scheduler.step(step):

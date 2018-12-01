@@ -12,7 +12,7 @@ class Default(object):
 
 
 class TwoStage(object):
-  def __init__(self, optimizer, threshold=10000, before=1e-4, after=1e-3):
+  def __init__(self, optimizer, threshold=2000, before=1e-4, after=1e-3):
       self.__dict__.update(locals())
 
   def step(self, step):

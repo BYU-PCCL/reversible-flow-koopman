@@ -23,6 +23,9 @@ docker-build:
 docker-run:
 	ssh remote@rainbow.cs.byu.edu
 
+test:
+	python3 main.py --
+
 experiment:
 	# CUDA_VISIBLE_DEVICES=0 python3 main.py --name=exp1 --model.num_layers_per_block=15 --epochs=40 --model.flow.safescaler=SigmoidShiftScaler &
 	# CUDA_VISIBLE_DEVICES=1 python3 main.py --name=exp1 --model.num_layers_per_block=15 --epochs=40 --model.flow.safescaler=AdditiveOnlyShiftScaler &
@@ -38,8 +41,7 @@ experiment:
 
 	# CUDA_VISIBLE_DEVICES=0 python3 main.py --name=exp3 --model.num_layers_per_block=15 --epochs=40 --model.flow.safescaler=SigmoidShiftScaler --scheduler=TwoStage --scheduler.after=2e-4 &
 	# CUDA_VISIBLE_DEVICES=1 python3 main.py --name=exp3 --model.num_layers_per_block=15 --epochs=40 --model.flow.safescaler=SigmoidShiftScaler --scheduler=TwoStage --scheduler.after=1e-5 &
-
-
+	
 docker-run-local:
 	# nvidia-smi test if gpus are being used
 	nvidia-docker run --workdir="${PWD}"  --rm --name=${CONTAINER_NAME} -v /mnt:/mnt -v /home:/home -p 9999:9999 -p 8181:8080 --hostname $(shell hostname) -t -i ${IMAGE_TAG} bash -i

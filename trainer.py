@@ -28,16 +28,24 @@ class Trainer():
     self.state_dict = {}
     self.state_dict['experiment_uid'] = '{:%m-%d-%H%M%S}'.format(datetime.now())
     self.state_dict['experiment_name'] = '{}-{}'.format(_logname, self.state_dict['experiment_uid'])
+
     self.state_dict.update({
       'logpath': "{}{}".format(logdir, self.state_dict['experiment_name']),
       'savepath': "{}{}".format(savedir, self.state_dict['experiment_name'])
     })
-      
+
+    self._cuda = False
 
     torch.backends.cudnn.benchmark=benchmark
 
+  def _processpostfix(self):
+    d = self.postfix()
+    d = {k.split(':')[0]:d[k] for k in d if k.split('.')[-1][0] != ':'}
+    d = {k:(d[k].item() if torch.is_tensor(d[k]) else d[k]) for k in d}
+    return d
+
   def cuda(self):
-    self.cuda = True
+    self._cuda = True
 
   def __call__(self, dataset, epochs=1, train=False, progress=None, leave=True, profile_alpha=.90, grad=True, **kwargs):
     trainer = self
@@ -68,10 +76,10 @@ class Trainer():
 
             with tqdm(dataloader, 
                       disable=not show_progress,
-                      desc=progress, leave=leave, smoothing=1) as bar:
+                      desc=progress, leave=leave, smoothing=.9) as bar:
               
               for i, data in enumerate(bar):
-                if trainer.cuda:
+                if trainer._cuda:
                   data = [d.cuda(async=True) for d in data] if len(data) > 0 else d.cuda(async=True)
                 after_load = time.clock()
 
@@ -100,11 +108,11 @@ class Trainer():
                 # only call trainer.postfix if the bar was updated
                 # this means the display is always 1 behind 
                 if show_progress and bar.last_print_n == i:
-                  bar.set_postfix(**trainer.postfix(), refresh=True)
+                  bar.set_postfix(**trainer._processpostfix(), refresh=True)
 
                 before_load = time.clock()
 
-            epochbar.set_postfix(**trainer.postfix(), refresh=True)
+            epochbar.set_postfix(**trainer._processpostfix(), refresh=True)
 
     return Gen()
         
@@ -119,54 +127,51 @@ class Trainer():
   def log(self, t, **kwargs):
     if self.profile_stats or utils.is_profile:
       stats = utils.gpustats()
-      self._last_log['maxmem'] = '{0:.1%}'.format(stats['maxmemusage'])
-      self._last_log['maxutil'] = '{0:.0%}'.format(stats['maxutil'])
+      self._last_log['maxmem:'] = '{0:.1%}'.format(stats['maxmemusage'])
+      self._last_log['maxutil:'] = '{0:.0%}'.format(stats['maxutil'])
 
       if hasattr(self, 'dataload_fraction'):
-        self._last_log['dperf'] = '{0:.1%}'.format(self.dataload_fraction)
+        self._last_log['dperf:'] = '{0:.1%}'.format(self.dataload_fraction)
 
-    newdict = self.flatten_dict(kwargs)
-    logtb = True
-    
-    if utils.is_profile or self.debug:
-      # don't log to tensorboard
-      logtb = False
+    newlog = self.flatten_dict(kwargs)
+    self._last_log.update(newlog)
 
-    if not hasattr(self, 'writer') and logtb:
+    if not hasattr(self, 'writer') and not self.debug:
       self.writer = SummaryWriter(self.state_dict['logpath'])
 
-    #self._last_log.update(newdict)
-    for label, value in newdict.items():
-      if torch.is_tensor(value) and value.numel() == 1:
-        self._last_log[label] = value.item()
-        self.writer.add_scalar(label, value, t) if logtb else None
-      
-      elif torch.is_tensor(value) and len(value.size()) == 4:
-        image = vutils.make_grid(value, normalize=True, scale_each=True)
-        self.writer.add_image(label, image, t) if logtb else None
+    # only write log entries for new data
+    for label_stub, value in newlog.items():
+      label = label_stub.split(':')[-1]
+      dotindex = label_stub.rfind('.')
+      if dotindex > -1 and label != label_stub and len(label) > 0:
+        label = label_stub[:dotindex + 1] + label
 
-      elif torch.is_tensor(value) and len(value.size()) == 3:
-        self.writer.add_image(label, value, t) if logtb else None
+      if len(label) > 0 and self.writer:
+        if torch.is_tensor(value) and value.numel() == 1:
+          self.writer.add_scalar(label, value, t)
+        
+        elif torch.is_tensor(value) and len(value.size()) == 4:
+          image = vutils.make_grid(value, normalize=True, scale_each=True)
+          self.writer.add_image(label, image, t)
 
-      elif torch.is_tensor(value) and len(value.size()) == 2:
-        pass
-      #   self.writer.add_embedding(value)
+        elif torch.is_tensor(value) and len(value.size()) == 3:
+          self.writer.add_image(label, value, t)
 
-      elif torch.is_tensor(value) and len(value.size()) == 1:
-        self.writer.add_histogram(label, value, t) if logtb else None
+        elif torch.is_tensor(value) and len(value.size()) == 2:
+          pass
+        #   self.writer.add_embedding(value)
 
-      elif np.isscalar(value) and not isinstance(value, str):
-        self.writer.add_scalar(label, value, t) if logtb else None
-        self._last_log[label] = value
-      
-      elif np.isscalar(value) and isinstance(value, str):
-        import re
-        value = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -/]*[@-~]').sub('', ('\t' + value).replace('\n', '  \n\t'))
-        self.writer.add_text(label, value, t) if logtb else None
+        elif torch.is_tensor(value) and len(value.size()) == 1:
+          self.writer.add_histogram(label, value, t)
 
-      else:
-        self._last_log[label] = value
-  
+        elif np.isscalar(value) and not isinstance(value, str):
+          self.writer.add_scalar(label, value, t)
+        
+        elif np.isscalar(value) and isinstance(value, str):
+          import re
+          value = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -/]*[@-~]').sub('', ('\t' + value).replace('\n', '  \n\t'))
+          self.writer.add_text(label, value, t)
+    
   def checkpoint(self, model, optimizer, tag='checkpoint', resume=False, path=None, log=None, **kwargs):
     if not utils.is_profile and not self.debug:
       filename = tag + '.pth.tar'

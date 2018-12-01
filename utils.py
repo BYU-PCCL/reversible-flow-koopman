@@ -7,6 +7,16 @@ import builtins
 is_profile = 'profile' in builtins.__dict__
 profile = builtins.__dict__.get('profile', lambda x: x)
 
+# def profile():
+#     def wrapper(f):
+#         @wraps(f)
+#         def inner(*args, **kwargs):
+#             profile = builtins.__dict__.get('profile', lambda x: x)(fields, envelope)
+#             profile(f)(*args, **kwargs)
+#             return 
+#         return inner
+#     return wrapper
+
 class block(object):
     def __init__(self, header, size=80, exit_on_error=False):
         self.exit_on_error = True

@@ -6,6 +6,8 @@ import numpy as np
 import pdb
 import utils
 
+import einops
+
 class Network(nn.Module):
   def __init__(self, hidden=512):
     self.__dict__.update(locals())
@@ -33,7 +35,7 @@ class Network(nn.Module):
     shift = h[:, 0::2].contiguous()
     scale = h[:, 1::2].contiguous()
 
-    return scale * 0, shift * 0
+    return scale, shift
 
 class LinearNetwork(Network):
    def lazy_init(self, x):
@@ -74,15 +76,23 @@ class Squeeze(nn.Module):
     self.factor = factor
 
   def forward(self, x, reverse=False):
-    b, c, h, w = x.size()
     if reverse:
-      return F.fold(x.view(b, c, -1), (h * self.factor, w * self.factor), 
-                kernel_size=(self.factor, self.factor), 
-                stride=self.factor, dilation=1, padding=0)
+      return einops.rearrange(x, 'b (c h2 w2) h w -> b c (h h2) (w w2)', h2=self.factor, w2=self.factor)
     else:
-      y = F.unfold(x, (self.factor, self.factor), 
-                  stride=self.factor, dilation=1, padding=0)
-      return y.view(b, -1, h // self.factor, w // self.factor)
+      return einops.rearrange(x, 'b c (h h2) (w w2) -> b (c h2 w2) h w', h2=self.factor, w2=self.factor)
+    
+    ##
+    # the above is slightly faster, but equivalent to the following:
+    ##
+    # b, c, h, w = x.size()
+    # if reverse:
+    #   return F.fold(x.view(b, c, -1), (h * self.factor, w * self.factor), 
+    #             kernel_size=(self.factor, self.factor), 
+    #             stride=self.factor, dilation=1, padding=0)
+    # else:
+    #   y = F.unfold(x, (self.factor, self.factor), 
+    #               stride=self.factor, dilation=1, padding=0)
+    #   return y.view(b, -1, h // self.factor, w // self.factor)
     
 class LogGaussian(nn.Module):
   log_2pi = float(np.log(2 * np.pi))
@@ -168,7 +178,6 @@ class ActNorm(nn.Module):
       self.bias.data.copy_(bias.data)
       self.logs.data.copy_(logs.data)
 
-
   def forward(self, x, reverse=False):
     self.lazy_init(x)
 
@@ -187,7 +196,7 @@ class ActNorm(nn.Module):
 
 class AffineFlowStep(nn.Module):
   def __init__(self, f:argchoice=[Network, LinearNetwork], 
-                     actnorm=False,
+                     actnorm=True,
                      safescaler:argchoice=[SigmoidShiftScaler, AdditiveOnlyShiftScaler, ClampScaler, FreeScaler, GlowShift]):
     self.__dict__.update(locals())
     super(AffineFlowStep, self).__init__()
@@ -208,6 +217,7 @@ class AffineFlowStep(nn.Module):
       if self.actnorm:
         z2, logdet_actnorm = self.actnorm(z2)
         logdet += logdet_actnorm
+        
       z2 += shift
       z2 *= safescale
 
@@ -250,7 +260,7 @@ class ReversibleFlow(nn.Module):
                          ┃ x ┃
                          ┗━━━┛
   """
-  def __init__(self, example, num_blocks=3, num_layers_per_block=32, squeeze_factor=2, 
+  def __init__(self, examples, num_blocks=3, num_layers_per_block=32, squeeze_factor=2, 
                inner_var_cond=False, 
                num_projections=10,
                prior:argchoice=[LogWhiteGaussian],
@@ -268,13 +278,13 @@ class ReversibleFlow(nn.Module):
     self.squeezes = nn.ModuleList([Squeeze(factor=squeeze_factor) for _ in range(num_blocks)])
 
     # A little test ot see if we will run into any problems
-    c, h, w = example.size()
+    b, c, h, w = examples.size()
     assert (h / squeeze_factor**num_blocks) % 1 == 0, 'height {} is not divisible by {}^{}'.format(h, squeeze_factor, num_blocks)
     assert (w / squeeze_factor**num_blocks) % 1 == 0, 'width {} is not divisible by {}^{}'.format(w, squeeze_factor, num_blocks)
     
     # stoke lazy-initialization
-    _, (z, _, _) = self.forward(-1, example.unsqueeze(0))
-    self.test(example.unsqueeze(0))
+    _, (z, _, _) = self.forward(-1, examples)
+    self.test(examples)
 
     self.register_buffer('projections', torch.zeros(z.size(1), num_projections))
 
@@ -289,19 +299,19 @@ class ReversibleFlow(nn.Module):
 
     for L in range(self.num_blocks):
       # squeeze
-      #z = self.squeezes[L](z)
+      z = self.squeezes[L](z)
 
       for K in range(self.num_layers_per_block):
         # permute
-        #z = self.permutes[L][K](z)
+        z = self.permutes[L][K](z)
 
         z, logdet = self.flows[L][K](z)
         loglikelihood_accum += logdet
 
       # split hierarchical 
-      #z1, z2 = torch.chunk(z, 2, dim=1)
-      #zout.append(z1)
-      #z = z2
+      z1, z2 = torch.chunk(z, 2, dim=1)
+      zout.append(z1)
+      z = z2
 
     zout.append(z)
 
@@ -318,9 +328,9 @@ class ReversibleFlow(nn.Module):
 
     for L in reversed(range(self.num_blocks)):
       # combine hierarchical
-      #z2 = z
-      #z1 = zout.pop()
-      #z = torch.cat([z1, z2], dim=1)
+      z2 = z
+      z1 = zout.pop()
+      z = torch.cat([z1, z2], dim=1)
 
       # reverse squeeze
       for K in reversed(range(self.num_layers_per_block)):
@@ -331,10 +341,10 @@ class ReversibleFlow(nn.Module):
         loglikelihood_accum -= logdet
 
         # unpermute
-        #z = self.permutes[L][K](z, reverse=True)
+        z = self.permutes[L][K](z, reverse=True)
 
       # unsqueeze
-      #z = self.squeezes[L](z, reverse=True)
+      z = self.squeezes[L](z, reverse=True)
 
     return z, loglikelihood_accum
 
@@ -345,13 +355,10 @@ class ReversibleFlow(nn.Module):
     assert logdet_zero.abs().max() < 1e-1, logdet_zero.abs().max().item()
 
   def forward(self, step, x):
-    #x.normal_(0, 0)
-    # x.fill_(0)
-    # sx[:, 0, 0, 0].normal_()
 
     z, loglikelihood_accum = self.encode(x)
 
-    zcat = torch.cat([x.view(x.size(0), -1) for x in z], dim=1)
+    zcat = torch.cat([x.reshape(x.size(0), -1) for x in z], dim=1)
 
     M = float(np.prod(x.shape[1:]))
     discretization_correction = float(-np.log(256)) * M

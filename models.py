@@ -9,49 +9,123 @@ import utils
 from modules import ReversibleFlow, Network
 
 class EncodeStateDirectly(nn.Module):
-  def __init__(self, dataset, extra_hidden_dim=0, l2_regularization=.001, flow:argchoice=[ReversibleFlow], inner_minimization_as_constant=True):
+  def __init__(self, dataset, extra_hidden_dim=8, l2_regularization=.001, flow:argchoice=[ReversibleFlow], inner_minimization_as_constant=True):
     self.__dict__.update(locals())
     super(EncodeStateDirectly, self).__init__()
     
-    #self.flow = flow(example=dataset[0][0][0])
-    self.observation_dim = torch.numel(dataset[0][0][0])
-    self.hidden_dim = self.observation_dim + extra_hidden_dim
+    example = torch.stack([dataset[i][0][0] for i in range(20)])
+    self.flow = flow(examples=example)
+    self.observation_dim = torch.numel(example[0])
+    
+    # round up to the nearest power of two, makes multi_matmul significantly faster
+    self.hidden_dim = 1 << (self.observation_dim + extra_hidden_dim - 1).bit_length()
 
-    self.A = nn.Parameter(torch.Tensor(self.hidden_dim, self.hidden_dim))
+    self.U = nn.Parameter(torch.Tensor(self.hidden_dim, self.hidden_dim))
+    self.V = nn.Parameter(torch.Tensor(self.hidden_dim, self.hidden_dim))
+    self.alpha = nn.Parameter(torch.Tensor(self.hidden_dim))
+
     self.C = nn.Parameter(torch.Tensor(self.observation_dim, self.hidden_dim))
 
     self.reset_parameters()
 
+  def __repr__(self):
+    summary =  '                Name : {}\n'.format(self.__class__.__name__)
+    summary += '    Hidden Dimension : {}\n'.format(self.hidden_dim)
+    summary += 'Obervation Dimension : {}\n'.format(self.observation_dim)
+    summary += '         A Dimension : {0}x{0} = {1}\n'.format(self.hidden_dim, self.hidden_dim**2)
+    summary += '         C Dimension : {0}x{1} = {2}\n'.format(self.observation_dim, 
+                                                               self.hidden_dim,
+                                                               self.C.numel())
+    return summary
+
   def reset_parameters(self):
-    torch.nn.init.xavier_uniform_(self.A)
     torch.nn.init.xavier_uniform_(self.C)
+    torch.nn.init.xavier_uniform_(self.U)
+    torch.nn.init.xavier_uniform_(self.V)
 
-    torch.nn.init.eye_(self.A)
-    torch.nn.init.eye_(self.C)
+    # We want to initialize so that the singular values are near .9
+    torch.nn.init.constant_(self.alpha, .90205)
 
   @utils.profile
-  def build_O_M(self, sequence_length):
-    M = torch.zeros((sequence_length * self.observation_dim, sequence_length * self.hidden_dim), device=torch.device('cuda'))
-    T = self.C + 0. # the next line can't have T be a leaf node
-    T.view(-1)[::self.C.size(1) + 1] += self.l2_regularization
-    for offset in range(sequence_length):
-      for i, j, in zip(range(sequence_length - offset), range(sequence_length - offset)):
-        i = i + offset
-        M[i * self.observation_dim:i * self.observation_dim + self.observation_dim, j * self.hidden_dim : j * self.hidden_dim + self.hidden_dim] = T
-      T = T.matmul(self.A)
+  def multi_matmul_power_of_two(self, M):
+    n = int(M.size(0))
+    for i in range(n.bit_length() - 1):
+      n = n >> 1
+      M = torch.bmm(M[:n], M[n:])
+    return M[0]
+
+  def multi_matmul(self, M, left=None, right=None):
+    if right - left == 1:
+      return M[left]
+
+    return torch.matmul(self.multi_matmul(M, left=(left + right)//2, right=right), 
+                        self.multi_matmul(M, left=left, right=(left + right)//2))
+  @utils.profile
+  def build_A(self):
+    Unorm = self.U / self.U.norm(dim=1, keepdim=True)
+    Vnorm = self.V / self.V.norm(dim=1, keepdim=True)
+
+    UH = torch.bmm(Unorm.unsqueeze(2), -2 * Unorm.unsqueeze(1))
+    VH = torch.bmm(Vnorm.unsqueeze(2), -2 * Vnorm.unsqueeze(1))
+
+    UH.reshape(UH.size(0), -1)[:, ::UH.size(1)+1] += 1
+    VH.reshape(VH.size(0), -1)[:, ::VH.size(1)+1] += 1
+
+    U = self.multi_matmul_power_of_two(UH)
+    Vt = self.multi_matmul_power_of_two(VH)
+
+    S = -torch.cos(self.alpha / 2.)
+    A = U.matmul(S[None, :] * Vt)
+
+    ##
+    # The code above is eqivalent to and faster than the following:
+    ##
+
+    # I = torch.eye(self.hidden_dim, device=self.U.device)
+
+    # Unorm = self.U / self.U.norm(dim=1, keepdim=True)
+    # Vnorm = self.V / self.V.norm(dim=1, keepdim=True)
+
+    # U, Vt = I, I
+    # for k in range(self.hidden_dim):
+    #   v = Unorm[k].unsqueeze(1)
+    #   H = I - 2 * v.matmul(v.t())
+    #   U = H.matmul(U)
+
+    #   w = Vnorm[k].unsqueeze(1)
+    #   H = I - 2 * w.matmul(w.t())
+    #   Vt = H.matmul(Vt)
+
+    # S = -torch.cos(self.alpha / 2.)
+
+    # Atest = U.matmul(S[None, :] * Vt)
+
+    # print(A - Atest)
+    # exit()
+
+    return A
+
+  # @utils.profile
+  # def build_O_M(self, sequence_length):
+  #   M = torch.zeros((sequence_length * self.observation_dim, sequence_length * self.hidden_dim), device=torch.device('cuda'))
+  #   T = self.C + 0. # the next line can't have T be a leaf node
+  #   T.view(-1)[::self.C.size(1) + 1] += self.l2_regularization
+  #   for offset in range(sequence_length):
+  #     for i, j, in zip(range(sequence_length - offset), range(sequence_length - offset)):
+  #       i = i + offset
+  #       M[i * self.observation_dim:i * self.observation_dim + self.observation_dim, j * self.hidden_dim : j * self.hidden_dim + self.hidden_dim] = T
+  #     T = T.matmul(self.A)
   
-    return M[:, :self.hidden_dim], M[:, self.hidden_dim:]
+  #   return M[:, :self.hidden_dim], M[:, self.hidden_dim:]
 
   @utils.profile
-  def build_O(self, sequence_length):
-    O = torch.zeros((sequence_length * self.observation_dim, self.hidden_dim), device=torch.device('cuda'))
-    T = self.C + 0. # the next line can't have T be a leaf node
-    T.view(-1)[::self.C.size(1) + 1] += self.l2_regularization * 0.0
-    for t in range(sequence_length):
-      O[t * self.observation_dim:t * self.observation_dim + self.observation_dim] = T
-      T = T.matmul(self.A)
-
-    return O
+  def build_O_A(self, sequence_length, device):
+    A = self.build_A()
+    O = [self.C]
+    for t in range(sequence_length - 1):
+       O.append(O[-1].matmul(A))
+    O = torch.cat(O, dim=0)
+    return O, A
 
   @utils.profile
   def forward(self, step, x, y):
@@ -59,8 +133,9 @@ class EncodeStateDirectly(nn.Module):
     xflat = x.reshape(-1, x.size(2), x.size(3), x.size(4))
     
     # encode each frame of each sequence in parallel
-    #loss, (zcat, z, loglikelihood_accum) = self.flow(step, xflat)
-    zcat = xflat.reshape(xflat.size(0), -1)
+    glowloss, (zcat, zlist, logdet) = self.flow(step, xflat)
+    #zcat, logdet = xflat, xflat.sum() * 0
+    zcat = zcat.reshape(zcat.size(0), -1)
     
     # unfold batch back into sequences
     # y is (batch, sequence, observation_dim)
@@ -71,7 +146,7 @@ class EncodeStateDirectly(nn.Module):
     Y = y.reshape(y.size(0), -1)
 
     # Find x0*
-    O = self.build_O(sequence_length=x.size(1))
+    O, A = self.build_O_A(sequence_length=x.size(1), device=x.device)
 
     if self.inner_minimization_as_constant:
       # very fast, uses QR decomposition, not differentiable
@@ -80,6 +155,7 @@ class EncodeStateDirectly(nn.Module):
     else:
       # This method is slower than using the QR decomposition, but torch.qr does not yet have gradients defined
       # see: https://github.com/pytorch/pytorch/blob/master/tools/autograd/derivatives.yaml#L618
+      # to see if things have changed
       # Instead, we use the cholesky decomposition of O'O 
       U = torch.potrf(O.t().matmul(O), upper=False)
       rhs = Y.matmul(O)
@@ -89,40 +165,47 @@ class EncodeStateDirectly(nn.Module):
     Yhat = O.matmul(x0)
     w = Y.t() - Yhat
 
-    print(self.C.matmul(self.A))
-    print(O)
-    print(w)
+    wscaled = w.t().reshape(y.size()) #/ y.norm(dim=2, keepdim=True)
 
-    regularization_loss = self.A.abs().mean() + self.C.abs().mean()
-    prediction_loss = w.abs().mean() #+ loss
+    prediction_error = .5 * (wscaled ** 2).mean()
+    loss = prediction_error + (logdet.clamp(max=0)**2).mean() #+ (1 - x0.norm(dim=0).mean())**2
 
-    return prediction_loss, (w, Y, Yhat, y)
+    return loss, (w, Y, Yhat, y, A, x0, logdet, prediction_error)
 
   @utils.profile
   def logger(self, step, data, out):
-    w, Y, Yhat, y = out
-    eigs, _ = torch.eig(self.A)
+    w, Y, Yhat, y, A, x0, logdet, prediction_error = out
+    stats = {}
 
-    normerror = torch.norm(y, dim=2) - torch.norm(Yhat.reshape(*y.shape), dim=2)
-    normerror = normerror.abs().mean()
+    if step % 3 == 0:
+      stats.update({'pred_err:prediction_error': prediction_error,
+                    'logdet': logdet.clamp(max=0).mean()})
 
-    print(torch.norm(y, dim=2)[0])
-    print(torch.norm(Yhat.reshape(*y.shape), dim=2)[0])
+      stats.update({'gmax': max([p.grad.abs().max() for p in self.parameters() if p.grad is not None]),
+                    'gnorm': max([p.grad.abs().norm() for p in self.parameters() if p.grad is not None])
+                    })
 
-    # TODO: log prediction and ground truth sequences
-    return {'pred_err': w.abs().max(),
-            '‖Y‖': Y.norm(),
-            '‖∇A‖': self.A.grad.norm(),
-            '‖∇C‖': self.C.grad.norm(),
-            'λₘₐₓ': eigs[:, 0].abs().max(),
-            'normerror': normerror,
-            'A': self.A.unsqueeze(0),
-            'C': self.C.unsqueeze(0)
-            } #self.flow.logger(step, data, out)
+    if step % 100 == 0:
+      # TODO: log prediction and ground truth sequences
+      stats.update({'|y|:mean_y_norm': y.norm(dim=2).mean(),
+                    '|x|:mean_x_norm': x0.norm(dim=0).mean(),
+                    'xₘₐₓ:x_max':x0.max()
+                    })
 
+    if step % 10**(int(np.log10(step + 1)) - 1) == 0:
+      stats.update({':A': A.unsqueeze(0),
+                    ':C': self.C.unsqueeze(0),
+                    ':S': self.alpha})
 
-# get batch of sequences
-# encode each frame in sequence as y
+    return stats
+
+# if the y's scale down by 10, the x0 scales down by 10, and the loss scales down by 10
+# how can we (properly) be agnostic to the scale of y?
+
+# log it/s?
+# print model and dataset summary at beginning
+# large state spaces struggle to learn?
+# reconstruction loss in log
 
 # actnorm isn't being initialized properly.. increase size of example batch
 

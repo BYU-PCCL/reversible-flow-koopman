@@ -16,6 +16,7 @@ class EncodeStateDirectly(nn.Module):
     example = torch.stack([dataset[i][0][0] for i in range(20)])
     self.flow = flow(examples=example)
     self.observation_dim = torch.numel(example[0])
+    self.example = example[0].unsqueeze(0)
     
     # round up to the nearest power of two, makes multi_matmul significantly faster
     self.hidden_dim = 1 << (self.observation_dim + extra_hidden_dim - 1).bit_length()
@@ -135,8 +136,7 @@ class EncodeStateDirectly(nn.Module):
     # encode each frame of each sequence in parallel
     glowloss, (zcat, zlist, logdet) = self.flow(step, xflat)
     #zcat, logdet = xflat, xflat.sum() * 0
-    zcat = zcat.reshape(zcat.size(0), -1)
-    
+ 
     # unfold batch back into sequences
     # y is (batch, sequence, observation_dim)
     y = zcat.reshape(x.size(0), x.size(1), -1)
@@ -170,11 +170,13 @@ class EncodeStateDirectly(nn.Module):
     prediction_error = .5 * (wscaled ** 2).mean()
     loss = prediction_error + (logdet.clamp(max=0)**2).mean() #+ (1 - x0.norm(dim=0).mean())**2
 
-    return loss, (w, Y, Yhat, y, A, x0, logdet, prediction_error)
+    return loss, (w, Y, Yhat, y, A, x0, logdet, prediction_error, zlist, zcat)
 
   @utils.profile
   def logger(self, step, data, out):
-    w, Y, Yhat, y, A, x0, logdet, prediction_error = out
+    x, yin = data
+    b, s, c, h, w = x.shape
+    w, Y, Yhat, y, A, x0, logdet, prediction_error, zlist, zcat = out
     stats = {}
 
     if step % 3 == 0:
@@ -193,8 +195,29 @@ class EncodeStateDirectly(nn.Module):
                     })
 
     if step % 10**(int(np.log10(step + 1)) - 1) == 0:
-      stats.update({':A': A.unsqueeze(0),
-                    ':C': self.C.unsqueeze(0),
+      # heaven help me if I need to change how this indexing works
+      # this is awkward, but we are converting shapes so that we go from
+      # Yhat to Y to y to zcat to zlist then decoding and reshaping to compare with x
+      zcat_hat = Yhat.t()[0:1].reshape(y[0:1].size()).reshape(-1, y[0:1].size(2))
+      indexes = np.cumsum([0] + [m[:1*s].view(1*s, -1).size(1) for m in zlist])
+      zlist_hat = [zcat_hat[:, a:b].reshape(c[:1*s].size()) for a, b, c in zip(indexes[:-1], indexes[1:], zlist)]
+      xhat, _ = self.flow.decode(zlist_hat)
+
+      def normalize(v):
+        v = v - v.min()
+        return v / v.max()
+
+      recon_min = x[0][:, 0:1].min()
+      shifted = x[0][:, 0:1] - recon_min
+      recon_max = shifted.max()
+      scaled = shifted / recon_max
+
+      stats.update({'recon_loss': ((x[0] - xhat.reshape(x[0].size()))**2).mean(),
+                    ':reconstruction': torch.clamp((xhat[:, 0:1] - recon_min) / recon_max, min=0, max=1),
+                    ':truth': scaled})
+      
+      stats.update({':A': normalize(A.unsqueeze(0)),
+                    ':C': normalize(self.C.unsqueeze(0)),
                     ':S': self.alpha})
 
     return stats
@@ -205,7 +228,12 @@ class EncodeStateDirectly(nn.Module):
 # log it/s?
 # print model and dataset summary at beginning
 # large state spaces struggle to learn?
-# reconstruction loss in log
+#############################
+#############################
+# RENAME EXPERIMENT
+# FACTOR INTO TESTABLE HYPTOTHESIS
+#############################
+#############################
 
 # actnorm isn't being initialized properly.. increase size of example batch
 

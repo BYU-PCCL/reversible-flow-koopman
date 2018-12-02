@@ -21,7 +21,7 @@ args.module('validation_dataset', datasets)
 args.module('trainer', trainer.Trainer)
 args.module('scheduler', schedules)
 
-args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='',
+args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='', shuffle_training=True,
                validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=3, max_grad_norm=6, amp=True)
 
 args.defaults({'optimizer.lr': .001})
@@ -69,9 +69,10 @@ def main():
   #amp_handle = amp.init(enabled=True)
 
   # save a checkpoint at exit, regardless of the reason
-  atexit.register(trainer.checkpoint, model, optimizer, tag='exit', log=print)
+  # atexit.register(trainer.checkpoint, model, optimizer, tag='exit', log=print)
 
-  for (epoch, batch, step, bar), data in trainer(train_dataset, epochs=pargs.epochs, progress='Training', shuffle=True, batch_size=pargs.batch_size):
+  for (epoch, batch, step, bar), data in trainer(train_dataset, epochs=pargs.epochs, 
+    progress='Training', shuffle=pargs.shuffle_training, batch_size=pargs.batch_size):
     
     trainer.state_dict['step'] = step + 1 # resume starting on the next step
 

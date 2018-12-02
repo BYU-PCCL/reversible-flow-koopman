@@ -151,7 +151,7 @@ class Trainer():
           self.writer.add_scalar(label, value, t)
         
         elif torch.is_tensor(value) and len(value.size()) == 4:
-          image = vutils.make_grid(value, normalize=True, scale_each=True)
+          image = vutils.make_grid(value, normalize=False, scale_each=False)
           self.writer.add_image(label, image, t)
 
         elif torch.is_tensor(value) and len(value.size()) == 3:

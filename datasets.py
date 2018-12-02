@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from torchvision import datasets, transforms
 
+import libs.args.args as args
+
 class MnistDataset(datasets.MNIST):
   def __init__(self, root='/tmp/mnist', train=True, download=True, overfit=False):
   	self.overfit = overfit
@@ -27,18 +29,28 @@ class MnistDataset(datasets.MNIST):
 
 
 class LTI2DSequence(torch.utils.data.Dataset):
-  def __init__(self, train=True, size=int(1e5), sequence_length=4, channels=4, state_dim=64 + 15, observation_dim=64):
+  def __init__(self, train=True, size=int(1e5), overfit=False, sequence_length=4, channels=4, state_dim=64 + 15, observation_dim=64):
     self.__dict__.update(locals())
+
+    if overfit:
+      self.size = args.reader().batch_size
+
+    assert np.sqrt(observation_dim).is_integer(), 'observation_dim must be a perfect square. try {}'.format((int(np.sqrt(observation_dim)))**2)
+
     rand_state = np.random.get_state()
     np.random.seed(42)
-    self.state_dim = state_dim * channels
+    self.state_dim = max(observation_dim, state_dim) * channels
     self.observation_dim = observation_dim * channels
+    
+    assert self.observation_dim <= self.state_dim, 'state_dim is too small'
+    
     self.A = np.random.randn(self.state_dim, self.state_dim)
     self.A = np.eye(self.state_dim) * .8
     self.C = np.zeros([self.observation_dim, self.state_dim])
     self.C[:self.observation_dim, :self.observation_dim] = np.eye(self.observation_dim)
     self.x0 = np.random.randn(size, self.state_dim)
     # self.state_noise = np.random.randn(self.sequence_length, self.state_dim)
+
     np.random.set_state(rand_state)
 
   def __getitem__(self, idx):

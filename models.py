@@ -44,8 +44,8 @@ class EncodeStateDirectly(nn.Module):
     torch.nn.init.xavier_uniform_(self.U)
     torch.nn.init.xavier_uniform_(self.V)
 
-    # We want to initialize so that the singular values are near .9
-    torch.nn.init.constant_(self.alpha, .90205)
+    # We want to initialize so that the singular values are near .95
+    torch.nn.init.constant_(self.alpha, -5.38113)
 
   @utils.profile
   def multi_matmul_power_of_two(self, M):
@@ -75,7 +75,7 @@ class EncodeStateDirectly(nn.Module):
     U = self.multi_matmul_power_of_two(UH)
     Vt = self.multi_matmul_power_of_two(VH)
 
-    S = -torch.cos(self.alpha / 2.)
+    S = -torch.cos(self.alpha / 2.) / 2 + .5
     A = U.matmul(S[None, :] * Vt)
 
     ##
@@ -97,7 +97,7 @@ class EncodeStateDirectly(nn.Module):
     #   H = I - 2 * w.matmul(w.t())
     #   Vt = H.matmul(Vt)
 
-    # S = -torch.cos(self.alpha / 2.)
+    # S = -torch.cos(self.alpha / 2.) / 2 + .5
 
     # Atest = U.matmul(S[None, :] * Vt)
 
@@ -167,8 +167,9 @@ class EncodeStateDirectly(nn.Module):
 
     wscaled = w.t().reshape(y.size()) #/ y.norm(dim=2, keepdim=True)
 
+    M = float(np.prod(xflat.shape[1:]))
     prediction_error = .5 * (wscaled ** 2).mean()
-    loss = prediction_error + (logdet.clamp(max=0)**2).mean() #+ (1 - x0.norm(dim=0).mean())**2
+    loss = prediction_error + ((logdet)**2).mean() / M
 
     return loss, (w, Y, Yhat, y, A, x0, logdet, prediction_error, zlist, zcat)
 
@@ -181,7 +182,7 @@ class EncodeStateDirectly(nn.Module):
 
     if step % 3 == 0:
       stats.update({'pred_err:prediction_error': prediction_error,
-                    'logdet': logdet.clamp(max=0).mean()})
+                    'logdet': logdet.mean()})
 
       stats.update({'gmax': max([p.grad.abs().max() for p in self.parameters() if p.grad is not None]),
                     'gnorm': max([p.grad.abs().norm() for p in self.parameters() if p.grad is not None])
@@ -212,13 +213,13 @@ class EncodeStateDirectly(nn.Module):
       recon_max = shifted.max()
       scaled = shifted / recon_max
 
-      stats.update({'recon_loss': ((x[0] - xhat.reshape(x[0].size()))**2).mean(),
+      stats.update({'recon_error': ((x[0] - xhat.reshape(x[0].size()))**2).mean(),
                     ':reconstruction': torch.clamp((xhat[:, 0:1] - recon_min) / recon_max, min=0, max=1),
                     ':truth': scaled})
       
       stats.update({':A': normalize(A.unsqueeze(0)),
                     ':C': normalize(self.C.unsqueeze(0)),
-                    ':S': self.alpha})
+                    ':S': -torch.cos(self.alpha / 2.) / 2 + .5})
 
     return stats
 

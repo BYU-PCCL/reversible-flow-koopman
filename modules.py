@@ -217,7 +217,7 @@ class AffineFlowStep(nn.Module):
       if self.actnorm:
         z2, logdet_actnorm = self.actnorm(z2)
         logdet += logdet_actnorm
-        
+
       z2 += shift
       z2 *= safescale
 

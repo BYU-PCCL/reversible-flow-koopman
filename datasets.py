@@ -38,17 +38,24 @@ class LTI2DSequence(torch.utils.data.Dataset):
     assert np.sqrt(observation_dim).is_integer(), 'observation_dim must be a perfect square. try {}'.format((int(np.sqrt(observation_dim)))**2)
 
     rand_state = np.random.get_state()
-    np.random.seed(42)
+    np.random.seed(41)
     self.state_dim = max(observation_dim, state_dim) * channels
     self.observation_dim = observation_dim * channels
     
     assert self.observation_dim <= self.state_dim, 'state_dim is too small'
     
     self.A = np.random.randn(self.state_dim, self.state_dim)
-    self.A = np.eye(self.state_dim) * .8
+    u, s, v = np.linalg.svd(self.A)
+    self.A = u.dot(np.diag(1 + 0 * np.clip(.35 + np.random.rand(*s.shape), 0, 1))).dot(v)
+    u, s, v = np.linalg.svd(self.A)
+
     self.C = np.zeros([self.observation_dim, self.state_dim])
     self.C[:self.observation_dim, :self.observation_dim] = np.eye(self.observation_dim)
     self.x0 = np.random.randn(size, self.state_dim)
+
+    # Normalize to unit length
+    self.x0 /= np.sqrt((self.x0 ** 2).sum(axis=1, keepdims=True))
+
     # self.state_noise = np.random.randn(self.sequence_length, self.state_dim)
 
     np.random.set_state(rand_state)
@@ -57,7 +64,7 @@ class LTI2DSequence(torch.utils.data.Dataset):
     obs = np.empty([self.sequence_length, self.observation_dim])
     x = self.x0[idx]
     for t in range(self.sequence_length):
-      x = self.A.dot(self.x0[idx])
+      x = self.A.dot(x)
       y = self.C.dot(x)
       obs[t] = y
 
@@ -68,3 +75,5 @@ class LTI2DSequence(torch.utils.data.Dataset):
 
   def __len__(self):
     return self.size
+
+

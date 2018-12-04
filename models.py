@@ -44,8 +44,20 @@ class EncodeStateDirectly(nn.Module):
     torch.nn.init.xavier_uniform_(self.U)
     torch.nn.init.xavier_uniform_(self.V)
 
+    # Initialize a full-rank C
+    u, s, v = torch.svd(self.C)
+    self.C.data = u.matmul(v.t())
+
     # We want to initialize so that the singular values are near .95
     torch.nn.init.constant_(self.alpha, -5.38113)
+
+    self.U.data /= self.U.norm(dim=1, keepdim=True)
+    self.V.data /= self.V.norm(dim=1, keepdim=True)
+
+    #torch.nn.init.eye_(self.C)
+    #torch.nn.init.eye_(self.U)
+    #torch.nn.init.eye_(self.V)
+    #torch.nn.init.constant_(self.alpha, -2 * np.pi)
 
   @utils.profile
   def multi_matmul_power_of_two(self, M):
@@ -63,6 +75,7 @@ class EncodeStateDirectly(nn.Module):
                         self.multi_matmul(M, left=left, right=(left + right)//2))
   @utils.profile
   def build_A(self):
+
     Unorm = self.U / self.U.norm(dim=1, keepdim=True)
     Vnorm = self.V / self.V.norm(dim=1, keepdim=True)
 
@@ -140,7 +153,7 @@ class EncodeStateDirectly(nn.Module):
     # unfold batch back into sequences
     # y is (batch, sequence, observation_dim)
     y = zcat.reshape(x.size(0), x.size(1), -1)
-   
+
     # stack sequence into tall vector
     # Y is tall (batch, sequence * observation_dim) with stacked y's
     Y = y.reshape(y.size(0), -1)
@@ -164,6 +177,16 @@ class EncodeStateDirectly(nn.Module):
 
     Yhat = O.matmul(x0)
     w = Y.t() - Yhat
+
+    # print('x0x0x0x0x0')
+    # print(x0[:, 0].size())
+    # print('YYYYYYYYYY')
+    # print(Y[0, :][:128].size())
+    # print('yhatyhatyhat')
+    # print(Yhat[:, 0][:128].size())
+    # print(Y[0, :] - Yhat[:, 0])
+
+    # print((Y[0, :] - Yhat[:, 0]).abs().max())
 
     wscaled = w.t().reshape(y.size()) #/ y.norm(dim=2, keepdim=True)
 
@@ -210,10 +233,15 @@ class EncodeStateDirectly(nn.Module):
 
       recon_min = x[0][:, 0:1].min()
       shifted = x[0][:, 0:1] - recon_min
-      recon_max = shifted.max()
+      recon_max = torch.clamp(shifted.max().abs(), min=1)
       scaled = shifted / recon_max
 
-      stats.update({'recon_error': ((x[0] - xhat.reshape(x[0].size()))**2).mean(),
+      yimg = Yhat.t()[0:1].reshape(y[0:1].size()).reshape(x[0].size())
+
+      stats.update({
+                    'recon_error': ((x[0] - xhat.reshape(x[0].size()))**2).mean(),
+                    ':yimg': torch.clamp((yimg[:, 0:1] - recon_min) / recon_max, min=0, max=1), 
+                    ':reconstruction_error': torch.clamp(((x[0] - xhat.reshape(x[0].size()))**2)[:,  0:1], min=0, max=1),
                     ':reconstruction': torch.clamp((xhat[:, 0:1] - recon_min) / recon_max, min=0, max=1),
                     ':truth': scaled})
       

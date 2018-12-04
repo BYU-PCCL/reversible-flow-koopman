@@ -196,7 +196,7 @@ class ActNorm(nn.Module):
 
 class AffineFlowStep(nn.Module):
   def __init__(self, f:argchoice=[Network, LinearNetwork], 
-                     actnorm=True,
+                     actnorm=False,
                      safescaler:argchoice=[SigmoidShiftScaler, AdditiveOnlyShiftScaler, ClampScaler, FreeScaler, GlowShift]):
     self.__dict__.update(locals())
     super(AffineFlowStep, self).__init__()

@@ -14,7 +14,7 @@ import atexit
 
 #from apex import amp
 
-args.module('model', models.EncodeStateDirectly)
+args.module('model', models.FramePredictionBase)
 args.module('optimizer', torch.optim, default=torch.optim.Adam)
 args.module('train_dataset', datasets)
 args.module('validation_dataset', datasets)
@@ -24,7 +24,7 @@ args.module('scheduler', schedules)
 args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='', shuffle_training=True,
                validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=3, max_grad_norm=6, amp=True)
 
-args.defaults({'optimizer.lr': .001})
+args.defaults({'optimizer.lr': .0001})
 
 pargs = args.reader()
 
@@ -63,13 +63,16 @@ with utils.block('Parameters') as b:
 with utils.block('Model') as b:
   b.print(repr(model_obj))
 
+with utils.block('Train Dataset') as b:
+  b.print(repr(train_dataset))
+
 @utils.profile
 def main():
 
   #amp_handle = amp.init(enabled=True)
 
   # save a checkpoint at exit, regardless of the reason
-  # atexit.register(trainer.checkpoint, model, optimizer, tag='exit', log=print)
+  atexit.register(trainer.checkpoint, model, optimizer, tag='exit', log=print)
 
   for (epoch, batch, step, bar), data in trainer(train_dataset, epochs=pargs.epochs, 
     progress='Training', shuffle=pargs.shuffle_training, batch_size=pargs.batch_size):
@@ -77,10 +80,13 @@ def main():
     trainer.state_dict['step'] = step + 1 # resume starting on the next step
 
     optimizer.zero_grad()
+
     model.train() if not model.training else None
 
     loss_value, out = model(step, *data)
     loss_value = loss_value.mean() # multi-gpu accumulation
+    
+    torch.cuda.synchronize()
 
     loss_value.backward()
     #with amp_handle.scale_loss(loss_value, optimizer) as scaled_loss:
@@ -89,23 +95,24 @@ def main():
     mlog = model_obj.logger(step, data, out)
     trainer.log(step, loss=loss_value, m=mlog)
     
-    if step % pargs.validation_frequency == 0 and step != 0:
-      model.eval()
-      val_gen = trainer(validation_dataset, batch_size=pargs.batch_size, progress='Validation', grad=False, leave=False)
-      validation_loss = sum(model(*data)[0].item() for _, data in val_gen) / len(val_gen)
-      trainer.log(step, validation=validation_loss)
+    # TODO: validation logging isn't working well, but I don't need it right now
+    # if step % pargs.validation_frequency == 0 and step != 0:
+    #   model.eval()
+    #   val_gen = trainer(validation_dataset, batch_size=pargs.batch_size, progress='Validation', grad=False, leave=False)
+    #   validation_loss = sum(model(*data)[0].item() for _, data in val_gen) / len(val_gen)
+    #   trainer.log(step, validation=validation_loss)
 
-      if validation_loss < trainer.state_dict.get('best_validation_loss', validation_loss + 1):
-        trainer.state_dict['best_validation_loss'] = validation_loss
-        path = trainer.checkpoint(model, optimizer, tag='best_validation', log=bar.write)
+    #   if validation_loss < trainer.state_dict.get('best_validation_loss', validation_loss + 1):
+    #     trainer.state_dict['best_validation_loss'] = validation_loss
+    #     path = trainer.checkpoint(model, optimizer, tag='best_validation', log=bar.write)
 
-    if step % pargs.checkpoint_frequency == 0  and step != 0:
-      path = trainer.checkpoint(model, optimizer, tag='recent', log=bar.write)
+    # if step % pargs.checkpoint_frequency == 0  and step != 0:
+    #   path = trainer.checkpoint(model, optimizer, tag='recent', log=bar.write)
 
-      trainer.state_dict['running_training_loss'] = .95 * trainer.state_dict.get('running_training_loss', loss_value) + .05 * loss_value
-      if trainer.state_dict['running_training_loss'] < trainer.state_dict.get('best_training_loss', 1e10):
-        trainer.state_dict['best_training_loss'] = trainer.state_dict['running_training_loss']
-        path = trainer.checkpoint(model, optimizer, tag='best_training', log=bar.write)
+    #   trainer.state_dict['running_training_loss'] = .95 * trainer.state_dict.get('running_training_loss', loss_value) + .05 * loss_value
+    #   if trainer.state_dict['running_training_loss'] < trainer.state_dict.get('best_training_loss', 1e10):
+    #     trainer.state_dict['best_training_loss'] = trainer.state_dict['running_training_loss']
+    #     path = trainer.checkpoint(model, optimizer, tag='best_training', log=bar.write)
 
     torch.nn.utils.clip_grad_value_(model.parameters(), pargs.max_grad)
     torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
@@ -116,9 +123,7 @@ def main():
 
 main()
 
-# TODO: dockerfile / DGX tests
 # TODO: multi-gpu integration for Trainer
-# TODO: dynamic system dataset
 # TODO: complex pointwise multiply / dynamic system inference
 
 # TODO: handle "data:type=None" for args
@@ -131,8 +136,6 @@ main()
 
 
 # fft?
-# create dynamic system dataset
-# nail down math
 # rewrite checkpointing api
 
 

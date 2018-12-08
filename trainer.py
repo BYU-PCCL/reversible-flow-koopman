@@ -6,13 +6,15 @@ import time
 from datetime import datetime
 import utils
 import signal
-from tensorboardX import SummaryWriter
+from tensorboardX import SummaryWriter, utils as tbxutils
 import torchvision.utils as vutils
 import numpy as np
 import builtins
 import os
 import sys
 import glob
+import matplotlib
+from matplotlib import pyplot as plt
 
 import traceback
 import pdb
@@ -151,11 +153,49 @@ class Trainer():
           self.writer.add_scalar(label, value, t)
         
         elif torch.is_tensor(value) and len(value.size()) == 4:
-          image = vutils.make_grid(value, normalize=False, scale_each=False)
-          self.writer.add_image(label, image, t)
+          value = value[:, :3] if value.size(1) > 3 else value[:, 0:1]
+          image = vutils.make_grid(value, normalize=True, scale_each=True)
+          # image = image.permute(1, 2, 0)
+
+          # fig = plt.figure()
+          # plot = fig.add_subplot(111)
+          # plt.imshow(image.detach().cpu())
+          # cb = plt.colorbar()
+          # plt.axis('off')
+          # plt.margins(0)
+          # plt.tight_layout()
+          # plt.subplots_adjust(left=0, right=1, top=0.99, bottom=0.01)
+          # fig.canvas.draw()
+
+          self.writer.add_image(label, image, t) # tbxutils.figure_to_image(fig)
+          #plt.close(fig)
 
         elif torch.is_tensor(value) and len(value.size()) == 3:
-          self.writer.add_image(label, value, t)
+          value = value[:3] if value.size(0) > 3 else value[0:1]
+          image = value - value.min()
+          image /= image.max()
+          # fig = plt.figure()
+          # plot = fig.add_subplot(111)
+
+          # img = value.permute(1, 2, 0).detach().cpu().numpy()
+          # if img.shape[2] == 1:
+          #   plt.imshow(img.mean(axis=2), interpolation='nearest')
+          # else:
+          #   plt.imshow(img, interpolation='nearest')
+          
+          # cb = plt.colorbar()
+          # cb.locator = matplotlib.ticker.MaxNLocator(nbins=5)
+          # #cb.ax.yaxis.set_major_locator(matplotlib.ticker.AutoLocator())
+          # cb.update_ticks()
+
+          # plt.axis('off')
+          # plt.margins(0)
+          # plt.tight_layout()
+          # plt.subplots_adjust(left=0, right=1, top=.99, bottom=.01)
+          # fig.canvas.draw()
+
+          self.writer.add_image(label, image, t) # tbxutils.figure_to_image(fig)
+          # plt.close(fig)
 
         elif torch.is_tensor(value) and len(value.size()) == 2:
           pass

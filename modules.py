@@ -112,6 +112,8 @@ class LogWhiteGaussian(nn.Module):
     super(LogWhiteGaussian, self).__init__()
 
   def forward(self, z):
+    # TBH I'm not sure why we don't have the n (number of dimensions)
+    # in this formula... but that's how the Glow code did it
     log_likelihood = -0.5 * (LogWhiteGaussian.log_2pi + ((z ** 2)))
     return log_likelihood.view(z.size(0), -1).sum(1)
 
@@ -260,7 +262,8 @@ class ReversibleFlow(nn.Module):
                          ┃ x ┃
                          ┗━━━┛
   """
-  def __init__(self, examples, num_blocks=3, num_layers_per_block=32, squeeze_factor=2, 
+  # 3blocks 32layers
+  def __init__(self, examples, num_blocks=1, num_layers_per_block=4, squeeze_factor=2, 
                inner_var_cond=False, 
                num_projections=10,
                prior:argchoice=[LogWhiteGaussian],
@@ -279,6 +282,7 @@ class ReversibleFlow(nn.Module):
 
     # A little test ot see if we will run into any problems
     b, c, h, w = examples.size()
+    
     assert (h / squeeze_factor**num_blocks) % 1 == 0, 'height {} is not divisible by {}^{}'.format(h, squeeze_factor, num_blocks)
     assert (w / squeeze_factor**num_blocks) % 1 == 0, 'width {} is not divisible by {}^{}'.format(w, squeeze_factor, num_blocks)
     
@@ -358,7 +362,7 @@ class ReversibleFlow(nn.Module):
 
     z, loglikelihood_accum = self.encode(x)
 
-    zcat = torch.cat([x.reshape(x.size(0), -1) for x in z], dim=1)
+    zcat = torch.cat([m.reshape(m.size(0), -1) for m in z], dim=1)
 
     M = float(np.prod(x.shape[1:]))
     discretization_correction = float(-np.log(256)) * M

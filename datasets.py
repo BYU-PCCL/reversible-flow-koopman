@@ -80,7 +80,7 @@ class LTI2DSequence(torch.utils.data.Dataset):
 
 
 class RotatingCube(torch.utils.data.Dataset):
-    def __init__(self, root="/mnt/pccfs/not_backed_up/data/cube_data/spherecube_new_const_pitch_16", sequence_length=4, num_channels=3, 
+    def __init__(self, root="/mnt/pccfs/not_backed_up/data/cube_data/spherecube_const_pitch_yaw_16", sequence_length=4, num_channels=3, 
                   transformation=transforms.Compose([transforms.ToTensor()]), 
                   projection_dimensions=2 * 8 * 8, use_pca=False, overfit=False, repeats=1000):
       super(RotatingCube, self).__init__()
@@ -99,7 +99,7 @@ class RotatingCube(torch.utils.data.Dataset):
       c, h, w = self.dataset_folder[0][0].size()
       
       # Create data, which is a tensor containing each image sequentially. Length is the number of files in the folder
-      self.data = torch.zeros(self.total_num_frames, c + (c % 2), h, w, device='cpu')
+      self.data = torch.zeros([self.total_num_frames, c + (c % 2), h, w]).float()
       for i in range(self.total_num_frames):
           self.data[i, :c] = self.dataset_folder[i][0]
       if use_pca:
@@ -117,9 +117,13 @@ class RotatingCube(torch.utils.data.Dataset):
         self.data = torch.mm(two_d, self.U[:,:projection_dimensions]) # k is num dimensions
         self.projection_dimensions = projection_dimensions
 
+      self.normalizing_const = self.data.view(self.total_num_frames, -1).max(dim=1)[0].mean()
+      self.data /= self.normalizing_const
+
     def __getitem__(self,index):
       index = index % (self.total_num_frames - self.sequence_length + 1)
-      raw = self.data[index: index + self.sequence_length].clone()
+      raw = self.data[index: index + self.sequence_length]
+      raw += (torch.rand_like(raw) - .5) * 1 / 256.
 
       if self.use_pca:
         k = int(np.sqrt(raw.size(1) / 2))

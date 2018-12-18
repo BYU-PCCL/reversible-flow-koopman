@@ -21,8 +21,10 @@ class Network(nn.Module):
       self.net = nn.Sequential(
         nn.Conv2d(c, self.hidden, 3, stride=1, padding=1),
         nn.ReLU(inplace=True),
+        #nn.Dropout2d(p=0.3),
         nn.Conv2d(self.hidden, self.hidden, 1, stride=1, padding=0),
         nn.ReLU(inplace=True),
+        #nn.Dropout2d(p=0.3),
         nn.Conv2d(self.hidden, c * 2, 3, stride=1, padding=1))
 
       # initalize with these
@@ -31,6 +33,7 @@ class Network(nn.Module):
 
   def forward(self, x):
     self.lazy_init(x)
+
     h = self.net(x)
     shift = h[:, 0::2].contiguous()
     scale = h[:, 1::2].contiguous()
@@ -263,7 +266,7 @@ class ReversibleFlow(nn.Module):
                          ┗━━━┛
   """
   # 3blocks 32layers
-  def __init__(self, examples, num_blocks=1, num_layers_per_block=4, squeeze_factor=2, 
+  def __init__(self, examples, num_blocks=1, num_layers_per_block=2, squeeze_factor=2, 
                inner_var_cond=False, 
                num_projections=10,
                prior:argchoice=[LogWhiteGaussian],
@@ -290,7 +293,7 @@ class ReversibleFlow(nn.Module):
     _, (z, _, _) = self.forward(-1, examples)
     self.test(examples)
 
-    self.register_buffer('projections', torch.zeros(z.size(1), num_projections))
+    #self.register_buffer('projections', torch.zeros(z.size(1), num_projections))
 
   @utils.profile
   def encode(self, x):
@@ -299,7 +302,7 @@ class ReversibleFlow(nn.Module):
     # pad channels if not divisble by 2
     assert x.size(1) % 2 == 0, 'Input must have channels divisible by 2'
     zout = []
-    z = x.clone()
+    z = x
 
     for L in range(self.num_blocks):
       # squeeze
@@ -353,20 +356,21 @@ class ReversibleFlow(nn.Module):
     return z, loglikelihood_accum
 
   def test(self, x):
+    self.eval()
     z, logdet = self.encode(x)
     xhat, logdet_zero = self.decode(z, logdet)
     assert (xhat - x).abs().max() < 1e-2, (xhat - x).abs().max().item()
     assert logdet_zero.abs().max() < 1e-1, logdet_zero.abs().max().item()
+    self.train()
 
   def forward(self, step, x):
-
     z, loglikelihood_accum = self.encode(x)
 
     zcat = torch.cat([m.reshape(m.size(0), -1) for m in z], dim=1)
 
     M = float(np.prod(x.shape[1:]))
     discretization_correction = float(-np.log(256)) * M
-    log_likelihood = self.logprior(zcat) + loglikelihood_accum #+ discretization_correction
+    log_likelihood = .01 * self.logprior(zcat) + loglikelihood_accum #+ discretization_correction
     loss = -log_likelihood
     
     # the following command requires a sync operation

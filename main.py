@@ -24,9 +24,11 @@ args.module('scheduler', schedules)
 args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='', shuffle_training=True,
                validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=3, max_grad_norm=6, amp=True)
 
-args.defaults({'optimizer.lr': .0001})
+args.defaults({'optimizer.lr': .001})
 
 pargs = args.reader()
+
+torch.manual_seed(42)
 
 train_dataset = pargs.train_dataset()
 validation_dataset = pargs.validation_dataset(train=False)
@@ -65,6 +67,8 @@ with utils.block('Model') as b:
 
 with utils.block('Train Dataset') as b:
   b.print(repr(train_dataset))
+
+
 
 @utils.profile
 def main():

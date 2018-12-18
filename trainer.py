@@ -16,6 +16,9 @@ import glob
 import matplotlib
 from matplotlib import pyplot as plt
 
+from queue import Queue, Empty
+import threading
+
 import traceback
 import pdb
 
@@ -37,6 +40,9 @@ class Trainer():
     })
 
     self._cuda = False
+    self._log_queue = Queue()
+    # self._log_thread = threading.Thread(target=self._log_thread_run, daemon=True)
+    # self._log_thread.start()
 
     torch.backends.cudnn.benchmark=benchmark
 
@@ -127,6 +133,11 @@ class Trainer():
              } if isinstance(dd, dict) else { prefix : dd }
   
   def log(self, t, **kwargs):
+    # self._log_queue.put((t, kwargs))
+    # self._last_log['q:'] = self._log_queue.qsize()
+    self.process(t, **kwargs)
+
+  def process(self, t, **kwargs):
     if self.profile_stats or utils.is_profile:
       stats = utils.gpustats()
       self._last_log['maxmem:'] = '{0:.1%}'.format(stats['maxmemusage'])
@@ -154,47 +165,14 @@ class Trainer():
         
         elif torch.is_tensor(value) and len(value.size()) == 4:
           value = value[:, :3] if value.size(1) > 3 else value[:, 0:1]
-          image = vutils.make_grid(value, normalize=True, scale_each=True)
-          # image = image.permute(1, 2, 0)
-
-          # fig = plt.figure()
-          # plot = fig.add_subplot(111)
-          # plt.imshow(image.detach().cpu())
-          # cb = plt.colorbar()
-          # plt.axis('off')
-          # plt.margins(0)
-          # plt.tight_layout()
-          # plt.subplots_adjust(left=0, right=1, top=0.99, bottom=0.01)
-          # fig.canvas.draw()
-
-          self.writer.add_image(label, image, t) # tbxutils.figure_to_image(fig)
-          #plt.close(fig)
+          image = vutils.make_grid(value, normalize=False, scale_each=False)
+          self.writer.add_image(label, torch.clamp(image, min=0, max=1), t) # tbxutils.figure_to_image(fig)
 
         elif torch.is_tensor(value) and len(value.size()) == 3:
           value = value[:3] if value.size(0) > 3 else value[0:1]
           image = value - value.min()
           image /= image.max()
-          # fig = plt.figure()
-          # plot = fig.add_subplot(111)
-
-          # img = value.permute(1, 2, 0).detach().cpu().numpy()
-          # if img.shape[2] == 1:
-          #   plt.imshow(img.mean(axis=2), interpolation='nearest')
-          # else:
-          #   plt.imshow(img, interpolation='nearest')
-          
-          # cb = plt.colorbar()
-          # cb.locator = matplotlib.ticker.MaxNLocator(nbins=5)
-          # #cb.ax.yaxis.set_major_locator(matplotlib.ticker.AutoLocator())
-          # cb.update_ticks()
-
-          # plt.axis('off')
-          # plt.margins(0)
-          # plt.tight_layout()
-          # plt.subplots_adjust(left=0, right=1, top=.99, bottom=.01)
-          # fig.canvas.draw()
-
-          self.writer.add_image(label, image, t) # tbxutils.figure_to_image(fig)
+          self.writer.add_image(label, torch.clamp(image, min=0, max=1), t) # tbxutils.figure_to_image(fig)
           # plt.close(fig)
 
         elif torch.is_tensor(value) and len(value.size()) == 2:
@@ -211,6 +189,18 @@ class Trainer():
           import re
           value = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -/]*[@-~]').sub('', ('\t' + value).replace('\n', '  \n\t'))
           self.writer.add_text(label, value, t)
+
+  def _log_thread_run(self):
+    while True:
+      try:
+        t, kwargs = self._log_queue.get()
+
+        self.process(t, **kwargs)
+
+      except Empty as e:
+        continue
+      except KeyboardInterrupt:
+        return
     
   def checkpoint(self, model, optimizer, tag='checkpoint', resume=False, path=None, log=None, **kwargs):
     if not utils.is_profile and not self.debug:

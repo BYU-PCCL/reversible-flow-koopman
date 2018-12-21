@@ -22,6 +22,9 @@ class Unitary(nn.Module):
     torch.nn.init.xavier_uniform_(self.U)
     self.U.data /= self.U.norm(dim=1, keepdim=True)
 
+    self.U.data *= 0
+    self.U.data.view(-1)[::self.U.size(1) + 1] += 1
+
   # def multi_matmul(self, M, left=None, right=None):
   #   if right - left == 1:
   #     return M[left]
@@ -47,7 +50,7 @@ class Unitary(nn.Module):
 
 class FramePredictionBase(nn.Module):
   def __init__(self, dataset, extra_hidden_dim=8, l2_regularization=.001,
-               future_sequence_length=50,
+               future_sequence_length=5,
                max_hidden_dim=128,
                true_hidden_dim=32,
                network:argchoice=[AffineFlowStep],
@@ -62,17 +65,19 @@ class FramePredictionBase(nn.Module):
     self.example = example[0].unsqueeze(0)
     
     # round up to the nearest power of two, makes multi_matmul significantly faster
-    self.true_hidden_dim = true_hidden_dim
     self.hidden_dim = min(self.observation_dim + extra_hidden_dim, max_hidden_dim)
     #self.hidden_dim = 1 << (self.hidden_dim - 1).bit_length()
+    self.true_hidden_dim = min(true_hidden_dim, self.hidden_dim)
 
-    self.U = Unitary(dim=self.hidden_dim)
-    self.Q = Unitary(dim=self.hidden_dim)
-
-    self.V = Unitary(dim=self.hidden_dim)
-    self.alpha = nn.Parameter(torch.Tensor(self.true_hidden_dim))
+    # self.U = Unitary(dim=self.hidden_dim)
+    # self.V = Unitary(dim=self.hidden_dim)
+    #self.alpha = nn.Parameter(torch.Tensor(self.true_hidden_dim))
     self.C = nn.Parameter(torch.Tensor(self.observation_dim, self.hidden_dim))
     # self.A = nn.Parameter(torch.Tensor(self.hidden_dim, self.hidden_dim))
+
+    self.eig_alpha = nn.Parameter(torch.Tensor(self.true_hidden_dim // 2))
+    self.eig_beta = nn.Parameter(torch.Tensor(self.true_hidden_dim // 2))
+
 
     self.reset_parameters()
 
@@ -96,13 +101,15 @@ class FramePredictionBase(nn.Module):
     # u, s, v = torch.svd(self.A)
     # self.A.data = u.matmul(v.t())
 
-    self.U.reset_parameters()
-    self.V.reset_parameters()
+    # self.U.reset_parameters()
+    # self.V.reset_parameters()
 
     # We want to initialize so that the singular values are near .95
-    torch.nn.init.constant_(self.alpha, -5.38113)
-    torch.nn.init.constant_(self.alpha, -2 * np.pi)
-    torch.nn.init.constant_(self.alpha, 0.001)
+    # torch.nn.init.constant_(self.alpha, -5.38113)
+    # torch.nn.init.constant_(self.alpha, -2 * np.pi)
+    # torch.nn.init.constant_(self.alpha, 0.001)
+    torch.nn.init.constant_(self.eig_alpha, 0.5)
+    torch.nn.init.constant_(self.eig_beta, 0.5)
 
   def SV(self):
     #-torch.cos(self.alpha / 2.) / 2 + .5
@@ -110,10 +117,30 @@ class FramePredictionBase(nn.Module):
 
   @utils.profile
   def build_A(self):
-    U = self.U.get()
-    V = self.V.get()
-    S = self.SV()
-    A = U[:, :self.true_hidden_dim].matmul(S[:, None] * V[:self.true_hidden_dim])
+    # U = self.U.get()#.detach()
+    # V = self.V.get()#.detach()
+    # S = self.SV()
+    # A = U[:, :self.true_hidden_dim].matmul(S[:, None] * V[:self.true_hidden_dim])
+
+    # Real "Jordan" Form
+    alpha = torch.clamp(1 - torch.abs(self.eig_alpha / 10), min=0)
+    beta = torch.clamp(1 - torch.abs(self.eig_beta / 10), min=0) * torch.sqrt(1 - alpha**2)
+
+    A = torch.zeros(self.hidden_dim, self.hidden_dim).to(alpha.device)
+    for i in range(self.hidden_dim // 2):
+      A[2 * i, 2 * i] = alpha[i]
+      A[2 * i + 1, 2 * i + 1] = alpha[i]
+      A[2 * i, 2 * i + 1] = beta[i]
+      A[2 * i + 1, 2 * i] = -beta[i]
+
+
+
+    # print(np.trace(U.detach().cpu().numpy()))
+    # print(torch.det(U))
+    # print('trace', .5 * (np.trace(U.detach().cpu().numpy()) - 1))
+    # print('U', np.arccos(.5 * (np.trace(U.detach().cpu().numpy()) - 1)))
+    # print('V', np.arccos(.5 * (np.trace(V.detach().cpu().numpy()) - 1)))
+    # print('A', np.arccos(.5 * (np.trace(Ar.detach().cpu().numpy()) - 1)))
 
     ##
     # The code above is eqivalent to and faster than the following:
@@ -164,6 +191,9 @@ class FramePredictionBase(nn.Module):
     A, C = self.build_A(), self.C
     #A, C = self.n4sid(y)
 
+    # A = A.detach()
+    # C = C.detach()
+
     #if not hasattr(self, 'A'):
     # A, C = utils.N4SID_simple(y[0].detach().cpu().numpy().T, 2, y.size(1) // 2, self.hidden_dim)
     # A = torch.from_numpy(A).float().to(y.device)
@@ -172,6 +202,9 @@ class FramePredictionBase(nn.Module):
     # np.save('/mnt/pccfs/backed_up/robert/A.npy', A.detach().cpu().numpy())
     # np.save('/mnt/pccfs/backed_up/robert/C.npy', C.detach().cpu().numpy())
     # np.save('/mnt/pccfs/backed_up/robert/y.npy', y.detach().cpu().numpy())
+
+    #np.set_printoptions(suppress=True, precision=3)
+    #print(1 / (np.linalg.eig(A.detach().cpu().numpy())[0].imag / (2 * np.pi)))
 
     # self.A = A.detach()
     # self.C = C.detach()
@@ -184,7 +217,6 @@ class FramePredictionBase(nn.Module):
     #   C = self.C
 
     # C = C.detach()
-
     # print('mean, absmean, max, min')
     # print(C.mean().item(), C.abs().mean().item(), C.max().item(), C.min().item())
 
@@ -244,7 +276,7 @@ class FramePredictionBase(nn.Module):
 
     # unfold batch back into sequences
     # y is (batch, sequence, observation_dim)
-    y = zcat.reshape(x.size(0), x.size(1), -1)
+    y = zcat.reshape(x.size(0), x.size(1), -1)#.detach()
 
     #mu = (y.reshape(-1, y.size(-1)).abs()).mean(dim=0)
     #y /= mu # all the y-dimensions are have mean abs of 1
@@ -257,69 +289,71 @@ class FramePredictionBase(nn.Module):
 
     M = float(np.prod(xflat.shape[1:]))
 
-    if True:
-      O, A, C = self.build_O_A(y=y, sequence_length=x.size(1), device=x.device, step=step)
+    O, A, C = self.build_O_A(y=y, sequence_length=x.size(1), device=x.device, step=step)
 
-      if self.inner_minimization_as_constant:
-        # very fast, uses QR decomposition, not differentiable
-        #if not hasattr(self, 'x0'):
-        z, _ = torch.gels(Y.t(), O)
-        x0 = z[:O.size(1)].detach()
-        #self.x0 = x0
-        #np.save('/mnt/pccfs/backed_up/robert/x0.npy', x0.detach().cpu().numpy())
+    if self.inner_minimization_as_constant:
+      # very fast, uses QR decomposition, not differentiable
+      #if not hasattr(self, 'x0'):
 
-        # else:
-        #   x0 = self.x0
+      z, _ = torch.gels(Y.t(), O)
+      x0 = z[:O.size(1)].detach()
+      #self.x0 = x0
+      # np.save('/mnt/pccfs/backed_up/robert/x0.npy', x0.detach().cpu().numpy())
 
-        #print('resids on x0', z[O.size(1):])
+      # else:
+      #   x0 = self.x0
 
-        # for rank deficent case
-        #x0, resid, rank, sv = np.linalg.lstsq(O.detach().cpu().numpy(), Y.t().detach().cpu().numpy(), rcond=1e-3)
-        #x0 = torch.from_numpy(x0).to(O.device)
-      else:
-        # This method is slower than using the QR decomposition, but torch.qr does not yet have gradients defined
-        # see: https://github.com/pytorch/pytorch/blob/master/tools/autograd/derivatives.yaml#L618
-        # to see if things have changed
-        # Instead, we use the cholesky decomposition of O'O 
-        U = torch.potrf(O.t().matmul(O), upper=False)
-        rhs = Y.matmul(O)
-        z = torch.trtrs(rhs.t(), U, transpose=False, upper=False)[0]
-        x0 = torch.trtrs(z, U, transpose=True, upper=False)[0]
-      
-
-      Yhat = O.matmul(x0)
-      
-      # Yhat = Yhat.view(y.size())
-      # for i in range(Yhat.size(1)):
-      #   Yhat[:, i] *= 0
-      #   Yhat[:, i] += 1
-        
-      #Yhat = Yhat.view(y.size(0), -1)
+      #print('resids on x0', z[O.size(1):])
 
 
-      # print('-------------------')
 
-      # for o in gc.get_objects():
-      #   if torch.is_tensor(o):
-      #     print(o.size())
-      # print('-------------------')
-
-      
-
-
-      # print(torch.cuda.memory_allocated())
-
-      w = Y.t() - Yhat
-      prediction_error = (w.t().reshape(y.size()).norm(dim=2)**2).mean()  # np.log(2 * np.pi)
-
+      # for rank deficent case
+      #x0, resid, rank, sv = np.linalg.lstsq(O.detach().cpu().numpy(), Y.t().detach().cpu().numpy(), rcond=1e-3)
+      #x0 = torch.from_numpy(x0).to(O.device)
     else:
-      w = None
-      prediction_error = None
-      O = None
-      C = None
-      A = None
-      x0 = None
-      Yhat = None
+      # This method is slower than using the QR decomposition, but torch.qr does not yet have gradients defined
+      # see: https://github.com/pytorch/pytorch/blob/master/tools/autograd/derivatives.yaml#L618
+      # to see if things have changed
+      # Instead, we use the cholesky decomposition of O'O 
+      U = torch.potrf(O.t().matmul(O), upper=False)
+      rhs = Y.matmul(O)
+      z = torch.trtrs(rhs.t(), U, transpose=False, upper=False)[0]
+      x0 = torch.trtrs(z, U, transpose=True, upper=False)[0]
+    
+    Yhat = O.matmul(x0).detach()
+
+    # Yhat = Yhat.view(y.size())
+    # for i in range(Yhat.size(1)):
+    #   Yhat[:, i] *= 0
+    #   Yhat[:, i] += 1
+      
+    #Yhat = Yhat.view(y.size(0), -1)
+
+
+    # print('-------------------')
+
+    # for o in gc.get_objects():
+    #   if torch.is_tensor(o):
+    #     print(o.size())
+    # print('-------------------')
+
+    
+
+
+    # print(torch.cuda.memory_allocated())
+
+    # if step % 2 == 0:
+    #   Yhat = Yhat.detach()
+    # else:
+    #   Y = Y.detach()
+    #   logdet = logdet.detach()
+
+    w = Y.t() - Yhat
+
+    # print('    x0:', x0.min().item(), x0.max().item(), x0.var().item(), x0.norm().item())
+    # print('     w:', w.mean().item(), w.var().item(), w.max().item(), w.min().item())
+
+    prediction_error = (w * w).mean()  # np.log(2 * np.pi)
 
     # if not hasattr(self, 'yhat'):
     #   self.yhat = Y.t().detach().clone()
@@ -335,9 +369,16 @@ class FramePredictionBase(nn.Module):
 
     # glowloss + .5 *
 
-    loss =  .5 * (w * w).mean() - (logdet / M).mean()
+    print((torch.exp(logdet / M)).mean())
+    print(x0)
+    print(x0.size())
 
-    #Yhat = Y.t() + torch.rand_like(Y.t()) * .01
+    loss = .5 * (w * w).mean() - (logdet / M).mean()
+    #loss *= 1 / x.size(1)
+
+    #print(w.std())
+
+    #Yhat = Y.t() + torch.rand_like(Y.t()) * 1
 
     # increase variance - doesn't help
     # add noise to y - it just gets removed during the backward pass.. it helps logging.. but not optimization
@@ -357,7 +398,8 @@ class FramePredictionBase(nn.Module):
     n = Y.size(0)
 
     zcat_hat = Y.reshape(-1, self.observation_dim)
-    indexes = np.cumsum([0] + [m[:n * s].view(n * s, -1).size(1) for m in zlist])
+    # print([m[:n * s].view(n * s, -1).size(1) for m in zlist])
+    indexes = np.cumsum([0] + [np.prod(m.shape[1:]) for m in zlist])
     zlist_hat = [zcat_hat[:, a:b].reshape(c[:n * s].size()) for a, b, c in zip(indexes[:-1], indexes[1:], zlist)]
     xhat, _ = self.flow.decode(zlist_hat)
 
@@ -368,6 +410,7 @@ class FramePredictionBase(nn.Module):
 
     # print([n for n, p in self.named_parameters() if p.grad is not None])
     # print([(n, p.grad.norm().item()) for n, p in self.named_parameters() if p.grad is not None])
+
     self.eval()
 
     x, yin = data
@@ -376,13 +419,24 @@ class FramePredictionBase(nn.Module):
     stats = {':logdet': logdet.mean(),
              ':predmean': w.mean(),
              ':predstd': w.std(),
+             ':normed_prederr': ((w * w).reshape(y.size()) / y.norm(dim=2, keepdim=True)).mean()
              #':Atheta': torch.arccos(.5 * (torch.trace(A) - 1)) # still untested: https://math.stackexchange.com/questions/261617/find-the-rotation-axis-and-angle-of-a-matrix
              }
 
     errnorm = w.t().reshape(y.size()).norm(dim=2)
 
-    # print([n for n, p in self.named_parameters() if p.grad is not None])
-    # print([(n, p.grad.norm().item()) for n, p in self.named_parameters() if p.grad is not None])
+    # print(self.U.U.grad.norm())
+    # print(self.V.U.grad.norm())
+    # print(self.alpha.grad.norm())
+
+    if self.eig_alpha.grad is not None:
+      assert not np.isnan(self.eig_alpha.grad.max().detach().cpu().numpy()), 'eig_alpha is nan: {}, {}'.format(x0, self.eig_alpha.grad, O)
+
+    for n, p in self.named_parameters():
+     if p.grad is not None:
+      print('{:>15}: {:.4f}'.format(n, p.grad.norm().item()))
+
+    #print([(n, p.grad.norm().item()) for n, p in self.named_parameters() if p.grad is not None])
 
     # xdiff = (x[:, 1:] - x[:, :-1]).reshape(y.size(0), -1, y.size(2))
     # ydiff = y[:, 1:] - y[:, :-1]
@@ -393,6 +447,7 @@ class FramePredictionBase(nn.Module):
                   ':y_mean': y.mean(),
                   ':y_max': y.max(),
                   ':y_min': y.min(),
+                  ':y_mean_norm': y.norm(dim=2).mean(),
                   ':log10_first_errnorm': torch.log(errnorm[:, 0].mean()),
                   ':log10_last_errnorm': torch.log(errnorm[:, -1].mean()),
                   ':last_over_first_errnorm': (errnorm[:, -1] / errnorm[:, 0]).mean()
@@ -409,7 +464,7 @@ class FramePredictionBase(nn.Module):
     #                })
 
     # # if step % 10**(int(np.log10(step + 99)) - 1) == 0:
-    if step % 10 == 0:
+    if step % 100 == 0:
       xhat = self.decode(Yhat.t()[:1], s, zlist)
 
       #render out into the future
@@ -471,7 +526,8 @@ class FramePredictionBase(nn.Module):
     #                 ':jacbackward_svs': svs,
     #                 ':detjacbackward': torch.det(jac)})
 
-    svs = torch.svd(A)[1]
+    u, svs, v = torch.svd(A)
+    angles = torch.acos(torch.diag(u.matmul(v))) / (2 * np.pi) * 360
 
     stats.update({#':gO': O.grad.unsqueeze(0),
                   ':A': A.unsqueeze(0),
@@ -480,6 +536,11 @@ class FramePredictionBase(nn.Module):
                   #':gC': self.C.grad.reshape(-1) if self.C.grad is not None else None,
                   ':max_sv(A)': svs.max(),
                   ':min_sv(A)': svs.min(),
+                  ':angles': angles,
+                  ':angle_max': angles.max(),
+                  ':angle_min': angles.min(),
+                  ':angle_var': angles.var(),
+                  ':angle_mean': angles.mean()
                   #':Ad':A.reshape(-1),
                   #':Csv': torch.svd(self.C)[1],
                   #':Cd':C.reshape(-1)

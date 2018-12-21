@@ -22,19 +22,23 @@ args.module('trainer', trainer.Trainer)
 args.module('scheduler', schedules)
 
 args.arguments(epochs=1, name='', batch_size=32, resume='', resume_uid='', shuffle_training=True,
-               validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=3, max_grad_norm=6, amp=True)
+               validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=3, max_grad_norm=20, amp=True)
 
 args.defaults({'optimizer.lr': .001})
 
 pargs = args.reader()
 
-torch.manual_seed(42)
+torch.manual_seed(40)
 
 train_dataset = pargs.train_dataset()
 validation_dataset = pargs.validation_dataset(train=False)
 model = pargs.model(train_dataset)
 model_obj = model
+
+
 optimizer = pargs.optimizer(model.parameters())
+optimizer = pargs.optimizer([{'params': model.flow.parameters()},
+                             {'params': model.parameters(recurse=False), 'lr': 0.1}])
 trainer = pargs.trainer() # _logname=pargs.stub()
 scheduler = pargs.scheduler(optimizer)
 
@@ -118,7 +122,7 @@ def main():
     #     trainer.state_dict['best_training_loss'] = trainer.state_dict['running_training_loss']
     #     path = trainer.checkpoint(model, optimizer, tag='best_training', log=bar.write)
 
-    torch.nn.utils.clip_grad_value_(model.parameters(), pargs.max_grad)
+    #torch.nn.utils.clip_grad_value_(model.parameters(), pargs.max_grad)
     torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
     optimizer.step()
 

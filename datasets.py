@@ -123,7 +123,7 @@ class RotatingCube(torch.utils.data.Dataset):
     def __getitem__(self,index):
       index = index % (self.total_num_frames - self.sequence_length + 1)
       raw = self.data[index: index + self.sequence_length]
-      raw += (torch.rand_like(raw) - .5) * 1 / 256.
+      #raw += (torch.rand_like(raw) - .5) * 1 / 64 #256.
 
       if self.use_pca:
         k = int(np.sqrt(raw.size(1) / 2))

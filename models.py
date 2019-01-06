@@ -52,7 +52,8 @@ class FramePredictionBase(nn.Module):
   def __init__(self, dataset, extra_hidden_dim=8, l2_regularization=.001,
                future_sequence_length=5,
                max_hidden_dim=128,
-               true_hidden_dim=32,
+               log_all=True,
+               #true_hidden_dim=32,
                network:argchoice=[AffineFlowStep],
                flow:argchoice=[ReversibleFlow], inner_minimization_as_constant=True):
     self.__dict__.update(locals())
@@ -67,16 +68,18 @@ class FramePredictionBase(nn.Module):
     # round up to the nearest power of two, makes multi_matmul significantly faster
     self.hidden_dim = min(self.observation_dim + extra_hidden_dim, max_hidden_dim)
     #self.hidden_dim = 1 << (self.hidden_dim - 1).bit_length()
-    self.true_hidden_dim = min(true_hidden_dim, self.hidden_dim)
+    #self.true_hidden_dim = min(true_hidden_dim, self.hidden_dim)
 
-    # self.U = Unitary(dim=self.hidden_dim)
-    # self.V = Unitary(dim=self.hidden_dim)
-    #self.alpha = nn.Parameter(torch.Tensor(self.true_hidden_dim))
+    self.U = Unitary(dim=self.hidden_dim)
+    self.V = Unitary(dim=self.hidden_dim)
+    self.alpha = nn.Parameter(torch.Tensor(self.hidden_dim))
     self.C = nn.Parameter(torch.Tensor(self.observation_dim, self.hidden_dim))
     # self.A = nn.Parameter(torch.Tensor(self.hidden_dim, self.hidden_dim))
 
-    self.eig_alpha = nn.Parameter(torch.Tensor(self.true_hidden_dim // 2))
-    self.eig_beta = nn.Parameter(torch.Tensor(self.true_hidden_dim // 2))
+    self.eig_alpha = nn.Parameter(torch.Tensor(self.hidden_dim // 2))
+    self.eig_beta = nn.Parameter(torch.Tensor(self.hidden_dim // 2))
+    self.eig_beta = nn.Parameter(torch.Tensor(self.hidden_dim // 2))
+    self.scaling_lambda = nn.Parameter(torch.Tensor(1))
 
 
     self.reset_parameters()
@@ -101,15 +104,16 @@ class FramePredictionBase(nn.Module):
     # u, s, v = torch.svd(self.A)
     # self.A.data = u.matmul(v.t())
 
-    # self.U.reset_parameters()
-    # self.V.reset_parameters()
+    self.U.reset_parameters()
+    self.V.reset_parameters()
 
     # We want to initialize so that the singular values are near .95
     # torch.nn.init.constant_(self.alpha, -5.38113)
     # torch.nn.init.constant_(self.alpha, -2 * np.pi)
-    # torch.nn.init.constant_(self.alpha, 0.001)
+    torch.nn.init.constant_(self.alpha, 0.001)
     torch.nn.init.constant_(self.eig_alpha, 0.5)
     torch.nn.init.constant_(self.eig_beta, 0.5)
+    torch.nn.init.constant_(self.scaling_lambda, 1.)
 
   def SV(self):
     #-torch.cos(self.alpha / 2.) / 2 + .5
@@ -120,7 +124,7 @@ class FramePredictionBase(nn.Module):
     # U = self.U.get()#.detach()
     # V = self.V.get()#.detach()
     # S = self.SV()
-    # A = U[:, :self.true_hidden_dim].matmul(S[:, None] * V[:self.true_hidden_dim])
+    # A = U[:, :self.hidden_dim].matmul(S[:, None] * V[:self.hidden_dim])
 
     # Real "Jordan" Form
     alpha = torch.clamp(1 - torch.abs(self.eig_alpha / 10), min=0)
@@ -220,6 +224,9 @@ class FramePredictionBase(nn.Module):
     # print('mean, absmean, max, min')
     # print(C.mean().item(), C.abs().mean().item(), C.max().item(), C.min().item())
 
+    # Normalize C
+    # C = C / (C.max() - C.min())
+
     O = [C]
     for t in range(sequence_length - 1):
        O.append(O[-1].matmul(A))
@@ -262,15 +269,18 @@ class FramePredictionBase(nn.Module):
     #   if torch.is_tensor(o):
     #     print(o.size())
     # print('-------------------')
-
-    if step % 10 == 0:
-      self.eval()
-
     x.requires_grad = True
+
 
     # fold sequence into batch
     xflat = x.reshape(-1, x.size(2), x.size(3), x.size(4))
+    M = float(np.prod(xflat.shape[1:]))
+
+    #print('thing', xflat.mean(), xflat.var())
     
+    # print('--')
+    # print(xflat.view(xflat.size(0), -1)[0])
+
     # encode each frame of each sequence in parallel
     glowloss, (zcat, zlist, logdet) = self.flow(step, xflat)
 
@@ -281,22 +291,45 @@ class FramePredictionBase(nn.Module):
     #mu = (y.reshape(-1, y.size(-1)).abs()).mean(dim=0)
     #y /= mu # all the y-dimensions are have mean abs of 1
 
+    #print(zcat.size(), xflat.size())
+    #print(xflat.view(xflat.size(0), -1)[0])
+    
+    #print((zcat / xflat.view(xflat.size(0), -1)))
+    
     # stack sequence into tall vector
     # Y is tall (batch, sequence * observation_dim) with stacked y's
     Y = y.reshape(y.size(0), -1)
 
+    # the scaling factor should not be centered (i.e not std or var, which are computed using centered values)
+    scaling_lambda = y.abs().mean()
+    self.scaling_lambda.data = .95 * self.scaling_lambda.data + .05 * scaling_lambda.data
+
+    Y = Y / scaling_lambda
+
     # Find x0*
-
-    M = float(np.prod(xflat.shape[1:]))
-
     O, A, C = self.build_O_A(y=y, sequence_length=x.size(1), device=x.device, step=step)
 
     if self.inner_minimization_as_constant:
       # very fast, uses QR decomposition, not differentiable
       #if not hasattr(self, 'x0'):
-
+      # / (Y.max() - Y.min())
       z, _ = torch.gels(Y.t(), O)
       x0 = z[:O.size(1)].detach()
+
+      # RO = O.clone()
+      # RY = Y.t().clone()
+      # R = 200
+      # RY[R * 1024:] *= 0
+      # RO[R * 1024:] *= 0
+
+      # z, _ = torch.gels(RY, RO)
+      # Rx0 = z[:O.size(1)].detach()
+
+      # print(x0)
+      # print(Rx0)
+      # print(Rx0 - x0)
+      # exit()
+
       #self.x0 = x0
       # np.save('/mnt/pccfs/backed_up/robert/x0.npy', x0.detach().cpu().numpy())
 
@@ -320,7 +353,20 @@ class FramePredictionBase(nn.Module):
       z = torch.trtrs(rhs.t(), U, transpose=False, upper=False)[0]
       x0 = torch.trtrs(z, U, transpose=True, upper=False)[0]
     
-    Yhat = O.matmul(x0).detach()
+    Yhat = O.matmul(x0) # * 0 #+ 10
+
+    # Yhat = Yha`t - Yhat.mean()
+    # Yhat = Yhat / (Yhat.max() - Yhat.min())
+    # Yhat = Yhat * 20
+
+    #Yhat = Yhat / (Yhat.max() - Yhat.min()).detach()
+    #Yhat = 20 * Yhat
+
+
+    # print('yhat',  Yhat.min().item(), Yhat.max().item())
+    # print('y',  Y.min().item(), Y.max().item())
+    # print('scaling', Yhat.abs().mean())
+    # print('xnorm', xflat.reshape(xflat.shape[0], -1).norm(dim=1).mean())
 
     # Yhat = Yhat.view(y.size())
     # for i in range(Yhat.size(1)):
@@ -350,10 +396,16 @@ class FramePredictionBase(nn.Module):
 
     w = Y.t() - Yhat
 
-    # print('    x0:', x0.min().item(), x0.max().item(), x0.var().item(), x0.norm().item())
+    # print('w', w.std())
+    # print('yhat', Yhat.abs().mean().item())
+    # print('y', (Y.reshape(y.size()).std(dim=1)).mean())
+    # print('scaling_lambda', scaling_lambda)
+
+    #print('    x0:', x0.min().item(), x0.max().item(), x0.var().item(), x0.norm().item())
     # print('     w:', w.mean().item(), w.var().item(), w.max().item(), w.min().item())
 
     prediction_error = (w * w).mean()  # np.log(2 * np.pi)
+    #prediction_error = ((w * w).reshape(y.size()) / y.norm(dim=2, keepdim=True).mean()).mean()
 
     # if not hasattr(self, 'yhat'):
     #   self.yhat = Y.t().detach().clone()
@@ -369,11 +421,57 @@ class FramePredictionBase(nn.Module):
 
     # glowloss + .5 *
 
-    print((torch.exp(logdet / M)).mean())
-    print(x0)
-    print(x0.size())
+    # print((torch.exp(logdet / M)).mean())
+    # print(x0)
+    # print(x0.size())
 
-    loss = .5 * (w * w).mean() - (logdet / M).mean()
+    # print('************')
+    # print('************')
+    # print('************')
+    # print('************')
+    # print('************')
+    # print('************')
+    # print('************')
+    # print('************')
+
+
+    #loss = .5 * (w * w).mean() - (logdet / M).mean() 
+
+    # prediction error by itself no longer has a bias to trend to small norm thanks to the normalization
+    # what could cause the log determinant term to get smaller -- opportunity for better prediction error
+    # what could prevent the log determinant term from getting bigger 
+      # -- the gradients of prediction error could be larger 
+    
+    # print('net   part', (logdet / M).mean())
+    # print('scale part',  torch.log(1. / scaling_lambda))
+
+      # .999965 *
+    err_std = .01
+    log_likelihood = (logdet / M).mean() + torch.log(1. / scaling_lambda)
+    loss = -log_likelihood + .5 * prediction_error
+
+    # .5 * 1/err_std * prediction_error
+
+
+
+    # print('max', (w**2).max())
+    # print((logdet / M).max())
+
+    # if step % 10 == 0:
+    #   gpred = torch.autograd.grad(.5 * prediction_error, self.flow.parameters(), retain_graph=True)
+    #   glogdet = torch.autograd.grad((logdet / M).mean(), self.flow.parameters(), retain_graph=True)
+
+    #   for (n,v), gpred, glogdet in zip(self.flow.named_parameters(), gpred, glogdet):
+    #     if 'bias' not in n and '4.weight' in n:
+    #       print('{:>30} pred/logdet {:.4f} {:.4f} {:.4f}'.format(n, (gpred.norm() / glogdet.norm()).item(), gpred.max(), glogdet.max()))
+
+    # print('--')
+    # print(C.mean(), C.max(), C.min())
+    # print('********************robert') 
+    # print('pred', .5 * (w * w).mean())
+    # print('logdet', (logdet / M).mean())
+    # print(loss)
+    # print('--')
     #loss *= 1 / x.size(1)
 
     #print(w.std())
@@ -388,7 +486,7 @@ class FramePredictionBase(nn.Module):
 
     # Yhat = Y.t() + torch.randn_like(Y.t()) * .3
 
-    return loss, (loss, w, Y, Yhat, y, A, x0, logdet / M, prediction_error, zlist, zcat, O, C)
+    return loss, (loss, w, Y, Yhat, y, A, x0, logdet / M, prediction_error, zlist, zcat, O, C, scaling_lambda)
 
   def decode(self, Y, sequence_length, zlist):
     # heaven help me if I need to change how this indexing works
@@ -409,16 +507,23 @@ class FramePredictionBase(nn.Module):
   def logger(self, step, data, out):
 
     # print([n for n, p in self.named_parameters() if p.grad is not None])
-    # print([(n, p.grad.norm().item()) for n, p in self.named_parameters() if p.grad is not None])
+    # for n, v in [(n, p.grad) for n, p in self.named_parameters() if p.grad is not None]:
+    #     if 'bias' not in n:
+    #       print('{:>30} {:.3f} {:.3f}'.format(n, v.norm().item(), v.max().item()))
+    #     if n == 'flow.flows.0.3.f.net.4.weight':
+    #       print(v.norm(dim=1))
 
+    #exit()
     self.eval()
 
     x, yin = data
     b, s, c, h, w = x.shape
-    loss, w, Y, Yhat, y, A, x0, logdet, prediction_error, zlist, zcat, O, C = out
+    loss, w, Y, Yhat, y, A, x0, logdet, prediction_error, zlist, zcat, O, C, scaling_lambda = out
     stats = {':logdet': logdet.mean(),
-             ':predmean': w.mean(),
-             ':predstd': w.std(),
+             ':w_mean': w.mean(),
+             ':w_std': w.std(),
+             ':scaling_lambda': scaling_lambda,
+             ':smooth_scaling_lambda': self.scaling_lambda,
              ':normed_prederr': ((w * w).reshape(y.size()) / y.norm(dim=2, keepdim=True)).mean()
              #':Atheta': torch.arccos(.5 * (torch.trace(A) - 1)) # still untested: https://math.stackexchange.com/questions/261617/find-the-rotation-axis-and-angle-of-a-matrix
              }
@@ -432,9 +537,9 @@ class FramePredictionBase(nn.Module):
     if self.eig_alpha.grad is not None:
       assert not np.isnan(self.eig_alpha.grad.max().detach().cpu().numpy()), 'eig_alpha is nan: {}, {}'.format(x0, self.eig_alpha.grad, O)
 
-    for n, p in self.named_parameters():
-     if p.grad is not None:
-      print('{:>15}: {:.4f}'.format(n, p.grad.norm().item()))
+    # for n, p in self.named_parameters():
+    #  if p.grad is not None:
+    #   print('{:>15}: {:.4f}'.format(n, p.grad.norm().item()))
 
     #print([(n, p.grad.norm().item()) for n, p in self.named_parameters() if p.grad is not None])
 
@@ -442,11 +547,10 @@ class FramePredictionBase(nn.Module):
     # ydiff = y[:, 1:] - y[:, :-1]
 
     stats.update({'pe:prediction_error': prediction_error,
-                  ':log10_prediction_error': torch.log(prediction_error),
-                  'logdet:loge_det': logdet.mean(),
                   ':y_mean': y.mean(),
                   ':y_max': y.max(),
                   ':y_min': y.min(),
+                  ':y_var': y.var(),
                   ':y_mean_norm': y.norm(dim=2).mean(),
                   ':log10_first_errnorm': torch.log(errnorm[:, 0].mean()),
                   ':log10_last_errnorm': torch.log(errnorm[:, -1].mean()),
@@ -464,83 +568,91 @@ class FramePredictionBase(nn.Module):
     #                })
 
     # # if step % 10**(int(np.log10(step + 99)) - 1) == 0:
-    if step % 100 == 0:
-      xhat = self.decode(Yhat.t()[:1], s, zlist)
+    
 
-      #render out into the future
-      state = x0[:, 0:1]
-      for i in range(s):
-        state = A.matmul(state)
-      yfuture = [C.matmul(state)]
-      future_sequence_length = self.future_sequence_length
-      for i in range(future_sequence_length - 1):
-        state = A.matmul(state)
-        yfuture.append(C.matmul(state))
-      yfuture = torch.cat(yfuture, dim=0).t()
-      xfuture = self.decode(yfuture, future_sequence_length, zlist)
-      yfuture = yfuture.reshape(1, future_sequence_length, *x[0:1].shape[2:])
 
-      # prepare the ys for logging
-      recon_error = (x[0] - xhat) * self.dataset.normalizing_const
-      ytruth =      Y[0:1].reshape(y[0:1].size()).reshape(x[0].size())
-      yhat = Yhat.t()[0:1].reshape(y[0:1].size()).reshape(x[0].size())
-      
-      xerror = recon_error.abs().max(1)[0].detach()
-      xerror = xerror.reshape(xerror.size(0), -1)
-      xerror = xerror.clamp(min=0, max=1)
-      xerror = xerror.reshape(recon_error.size(0), 1, recon_error.size(2), recon_error.size(3))
 
-      stats.update({#'recon': recon_error.abs().mean(),
-                    ':yhat': yhat,
-                    ':ytruth': ytruth, 
-                    ':yerr': (yhat - ytruth),
-                    #':yerror': (yhat - ytruth).view(-1),
-                    ':reconstruction_error': recon_error.view(-1),
-                    ':xerror': xerror,
-                    ':xhat': xhat * self.dataset.normalizing_const,
-                    ':xfuture': xfuture * self.dataset.normalizing_const,
-                    #':xtruth': x[0] * self.dataset.normalizing_const
-                    })
 
-    # if step % 100 ==  0:
-    #   xflatsingle = x.reshape(-1, x.size(2), x.size(3), x.size(4))
-    #   xflatsingle = xflatsingle[0:1].clone()
-    #   xflatsingle.requires_grad = True
-    #   _, (zcatsingle, zlistsingle, _) = self.flow(step, xflatsingle)
-    #   jac = jacobian(zcatsingle, xflatsingle)
-    #   svs = torch.svd(jac)[1]
+    if self.log_all:
+      if step % 100 == 0:
+        xhat = self.decode(self.scaling_lambda * Yhat.t()[:1], s, zlist)
 
-    #   stats.update({':jacforward': jac.unsqueeze(0),
-    #                 ':jacforward_norm_max': svs.max(),
-    #                 ':jacforward_norm_min': svs.min(),
-    #                 ':jacforward_svs': svs,
-    #                 ':detjacforward': torch.det(jac)})
+        #render out into the future
+        state = x0[:, 0:1]
+        for i in range(s):
+          state = A.matmul(state)
+        yfuture = [C.matmul(state)]
+        future_sequence_length = self.future_sequence_length
+        for i in range(future_sequence_length - 1):
+          state = A.matmul(state)
+          yfuture.append(C.matmul(state))
+        yfuture = torch.cat(yfuture, dim=0).t()
+        xfuture = self.decode(self.scaling_lambda * yfuture, future_sequence_length, zlist)
+        yfuture = yfuture.reshape(1, future_sequence_length, *x[0:1].shape[2:])
 
-    #   xlistsingle, _ = self.flow.decode(zlistsingle)
+        # prepare the ys for logging
+        recon_error = self.dataset.denormalize(x[0] - xhat)
+        ytruth =      Y[0:1].reshape(y[0:1].size()).reshape(x[0].size())
+        yhat = Yhat.t()[0:1].reshape(y[0:1].size()).reshape(x[0].size())
+        
+        xerror = recon_error.abs().max(1)[0].detach()
+        xerror = xerror.reshape(xerror.size(0), -1)
+        xerror = xerror.clamp(min=0, max=1)
+        xerror = xerror.reshape(recon_error.size(0), 1, recon_error.size(2), recon_error.size(3))
 
-    #   jac = jacobian(xlistsingle, zlistsingle)
-    #   svs = torch.svd(jac)[1]
-    #   stats.update({':jacbackward': jac.unsqueeze(0),
-    #                 ':jacbackward_norm_max': svs.max(),
-    #                 ':jacbackward_norm_min': svs.min(),
-    #                 ':jacbackward_svs': svs,
-    #                 ':detjacbackward': torch.det(jac)})
+        stats.update({#'recon': recon_error.abs().mean(),
+                      ':yhat': (yhat - yhat.min()) / ((yhat - yhat.min())).max(),
+                      ':ytruth': (ytruth - ytruth.min()) / ((ytruth - ytruth.min())).max(), 
+                      ':yerr': (yhat - ytruth),
+                      #':yerror': (yhat - ytruth).view(-1),
+                      ':reconstruction_error': recon_error.view(-1),
+                      ':xerror': xerror,
+                      ':xhat': self.dataset.denormalize(xhat),
+                      ':xfuture': self.dataset.denormalize(xfuture),
+                      ':xtruth': self.dataset.denormalize(x[0])
+                      })
 
-    u, svs, v = torch.svd(A)
-    angles = torch.acos(torch.diag(u.matmul(v))) / (2 * np.pi) * 360
 
-    stats.update({#':gO': O.grad.unsqueeze(0),
+
+
+
+
+
+
+
+
+
+
+      if step % 100 ==  0:
+        xflatsingle = x.reshape(-1, x.size(2), x.size(3), x.size(4))
+        xflatsingle = xflatsingle[0:1].clone()
+        xflatsingle.requires_grad = True
+        _, (zcatsingle, zlistsingle, _) = self.flow(step, xflatsingle)
+        # jac = jacobian(zcatsingle, xflatsingle)
+        # svs = torch.svd(jac)[1]
+
+        # stats.update({':jacforward': jac.unsqueeze(0),
+        #               ':jacforward_norm_max': svs.max(),
+        #               ':jacforward_norm_min': svs.min(),
+        #               ':jacforward_svs': svs})
+
+        xlistsingle, _ = self.flow.decode(zlistsingle)
+
+        jac = jacobian(xlistsingle, zlistsingle)
+        svs = torch.svd(jac)[1]
+        stats.update({':jacbackward': jac.unsqueeze(0),
+                      ':jacbackward_norm_max': svs.max(),
+                      ':jacbackward_norm_min': svs.min(),
+                      ':jacbackward_percent_bad_svs': (svs > 1).float().mean()})
+
+        u, svs, v = torch.svd(A)
+        stats.update({#':gO': O.grad.unsqueeze(0),
                   ':A': A.unsqueeze(0),
                   #':gA': A.grad.reshape(-1) if A.grad is not None else None,
                   ':C': C.unsqueeze(0),
                   #':gC': self.C.grad.reshape(-1) if self.C.grad is not None else None,
                   ':max_sv(A)': svs.max(),
                   ':min_sv(A)': svs.min(),
-                  ':angles': angles,
-                  ':angle_max': angles.max(),
-                  ':angle_min': angles.min(),
-                  ':angle_var': angles.var(),
-                  ':angle_mean': angles.mean()
                   #':Ad':A.reshape(-1),
                   #':Csv': torch.svd(self.C)[1],
                   #':Cd':C.reshape(-1)

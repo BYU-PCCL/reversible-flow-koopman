@@ -192,7 +192,6 @@ class ActNorm(nn.Module):
       x += self.bias
       x *= torch.exp(self.logs)
     else:
-      pass
       x /= torch.exp(self.logs)
       x -= self.bias
 
@@ -202,7 +201,7 @@ class ActNorm(nn.Module):
 class AffineFlowStep(nn.Module):
   def __init__(self, f:argchoice=[Network, LinearNetwork], 
                      actnorm=False,
-                     safescaler:argchoice=[SigmoidShiftScaler, AdditiveOnlyShiftScaler, ClampScaler, FreeScaler, GlowShift]):
+                     safescaler:argchoice=[FreeScaler, SigmoidShiftScaler, AdditiveOnlyShiftScaler, ClampScaler, FreeScaler, GlowShift]):
     self.__dict__.update(locals())
     super(AffineFlowStep, self).__init__()
     self.f = f()
@@ -210,13 +209,16 @@ class AffineFlowStep(nn.Module):
     self.actnorm = ActNorm() if self.actnorm else None
 
   @utils.profile
-  def forward(self, z, reverse=False):
+  def forward(self, z, reverse=False, K=None):
     z1, z2 = torch.chunk(z, 2, dim=1)
 
     scale, shift = self.f(z1)
     safescale = self.safescaler(scale, z2)
     logscale = torch.log(safescale)
     logdet = logscale.view(logscale.size(0), -1).sum(1)
+
+    if np.random.rand() < .01:
+      print('safescale', safescale.mean().item(), logscale.mean())
 
     if not reverse:
       if self.actnorm:
@@ -229,6 +231,7 @@ class AffineFlowStep(nn.Module):
     else:
       z2 /= safescale
       z2 -= shift
+
       if self.actnorm:
         z2, logdet_actnorm = self.actnorm(z2, reverse=True)
         logdet += logdet_actnorm
@@ -266,7 +269,7 @@ class ReversibleFlow(nn.Module):
                          ┗━━━┛
   """
   # 3blocks 32layers
-  def __init__(self, examples, num_blocks=1, num_layers_per_block=2, squeeze_factor=2, 
+  def __init__(self, examples, num_blocks=1, num_layers_per_block=10, squeeze_factor=2, 
                inner_var_cond=False, 
                num_projections=10,
                prior:argchoice=[LogWhiteGaussian],
@@ -299,20 +302,18 @@ class ReversibleFlow(nn.Module):
   def encode(self, x):
     loglikelihood_accum = 0
 
-    # pad channels if not divisble by 2
-    assert x.size(1) % 2 == 0, 'Input must have channels divisible by 2'
     zout = []
-    z = x
+    z = x.clone()
 
     for L in range(self.num_blocks):
-      # squeeze
+      # squeeze - ensures the channel dimension is divisible by 2
       z = self.squeezes[L](z)
 
       for K in range(self.num_layers_per_block):
         # permute
         z = self.permutes[L][K](z)
 
-        z, logdet = self.flows[L][K](z)
+        z, logdet = self.flows[L][K](z, K=K)
         loglikelihood_accum += logdet
 
       # split hierarchical 
@@ -341,9 +342,7 @@ class ReversibleFlow(nn.Module):
 
       # reverse squeeze
       for K in reversed(range(self.num_layers_per_block)):
-        #reverse flow step
-        z1, z2 = torch.chunk(z, 2, dim=1)
-
+        
         z, logdet = self.flows[L][K](z, reverse=True)
         loglikelihood_accum -= logdet
 
@@ -359,7 +358,7 @@ class ReversibleFlow(nn.Module):
     self.eval()
     z, logdet = self.encode(x)
     xhat, logdet_zero = self.decode(z, logdet)
-    assert (xhat - x).abs().max() < 1e-2, (xhat - x).abs().max().item()
+    assert (xhat - x).abs().max() < 1e-7, (xhat - x).abs().max().item()
     assert logdet_zero.abs().max() < 1e-1, logdet_zero.abs().max().item()
     self.train()
 
@@ -370,7 +369,7 @@ class ReversibleFlow(nn.Module):
 
     M = float(np.prod(x.shape[1:]))
     discretization_correction = float(-np.log(256)) * M
-    log_likelihood = .01 * self.logprior(zcat) + loglikelihood_accum #+ discretization_correction
+    log_likelihood = self.logprior(zcat) + loglikelihood_accum #+ discretization_correction
     loss = -log_likelihood
     
     # the following command requires a sync operation

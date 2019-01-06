@@ -164,8 +164,9 @@ class Trainer():
           self.writer.add_scalar(label, value, t)
         
         elif torch.is_tensor(value) and len(value.size()) == 4:
-          value = value[:, :3] if value.size(1) > 3 else value[:, 0:1]
+          value = value[:, :3] if value.size(1) >= 3 else value[:, 0:1]
           image = vutils.make_grid(value, normalize=False, scale_each=False)
+
           self.writer.add_image(label, torch.clamp(image, min=0, max=1), t) # tbxutils.figure_to_image(fig)
 
         elif torch.is_tensor(value) and len(value.size()) == 3:
@@ -247,7 +248,7 @@ class Trainer():
       path = checkpoints[-1]
       sd = torch.load(path)
       model.load_state_dict(sd['model'])
-      optimizer.load_state_dict(sd['optimizer'])
+      #optimizer.load_state_dict(sd['optimizer'])
 
       self.state_dict = sd['trainer']
       return path

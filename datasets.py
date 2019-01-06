@@ -31,7 +31,7 @@ import libs.args.args as args
 class RotatingCube(torch.utils.data.Dataset):
     def __init__(self, root="/mnt/pccfs/not_backed_up/data/cube_data/spherecube_const_pitch_yaw_16", sequence_length=10, num_channels=3, 
                   transformation=transforms.Compose([transforms.ToTensor()]), 
-                  projection_dimensions=2 * 8 * 8, use_pca=False, overfit=False, repeats=1000, train=False):
+                  projection_dimensions=2 * 8 * 8, use_pca=False, overfit=False, repeats=10000, train=False):
       super(RotatingCube, self).__init__()
       
       self.repeats = repeats
@@ -110,57 +110,60 @@ class RotatingCube(torch.utils.data.Dataset):
       return summary
 
 
-# class MovingSymbols(torch.utils.data.Dataset):
-#     raw = None
-#     def __init__(self, root="/mnt/pccfs/not_backed_up/data/cube_data/spherecube_const_pitch_yaw_16", sequence_length=10, 
-#                   overfit=False, size=500, train=False, height=16, width=16):
-#       super(MovingSymbols, self).__init__()
+class MovingSymbols(torch.utils.data.Dataset):
+    raw = None
+    def __init__(self, root="/mnt/pccfs/not_backed_up/data/cube_data/spherecube_const_pitch_yaw_16", sequence_length=10, 
+                  overfit=False, size=10000, train=False, height=16, width=16):
+      super(MovingSymbols, self).__init__()
 
-#       import sys
-#       sys.path.append('./libs/moving-symbols/moving_symbols')
-#       from moving_symbols import MovingSymbolsEnvironment
+      import sys
+      sys.path.append('./libs/moving-symbols/moving_symbols')
+      from moving_symbols import MovingSymbolsEnvironment
 
-#       self.overfit = overfit
-#       self.batch_size = args.reader().batch_size
+      self.overfit = overfit
+      self.batch_size = args.reader().batch_size
 
-#       self.params = {
-#         'data_dir':'./libs/moving-symbols/data/mnist',
-#         'split': 'training',
-#         'color_output': True,
-#         'symbol_labels': range(10),
-#         'position_speed_limits': (3, 3),
-#         'video_size': (height, width),
-#         'scale_limits': (.4, .4)
-#       }
+      self.params = {
+        'data_dir':'./libs/moving-symbols/data/mnist',
+        'split': 'training',
+        'color_output': True,
+        'symbol_labels': range(10),
+        'position_speed_limits': (3, 3),
+        'video_size': (height, width),
+        'scale_limits': (.4, .4)
+      }
 
-#       self.size = size if not self.overfit else self.batch_size
+      self.size = size if not self.overfit else self.batch_size
 
-#       raw = []
-#       from tqdm import tqdm
-#       for s in tqdm(range(self.size), desc='Building Dataset', leave=False):
-#         env = MovingSymbolsEnvironment(self.params, np.random.randint(0, 1))
-#         raw.append(np.array([np.asarray(env.next()) for _ in range(sequence_length)]) / 255.)
-#       raw = np.array(raw)
+      raw = []
+      from tqdm import tqdm
+      for s in tqdm(range(self.size), desc='Building Dataset', leave=False):
+        env = MovingSymbolsEnvironment(self.params, np.random.randint(0, 1))
+        raw.append(np.array([np.asarray(env.next()) for _ in range(sequence_length)]) / 255.)
+      raw = np.array(raw)
 
-#       self.data = torch.from_numpy(raw.astype(np.float32)).permute(0, 1, 4, 2, 3).contiguous()
-#       self.data += (torch.rand_like(self.data) - .5) * 1 / 256.
+      self.data = torch.from_numpy(raw.astype(np.float32)).permute(0, 1, 4, 2, 3).contiguous()
       
-#       self.centering_const = self.data.view(self.total_num_frames, -1).mean()
-#       self.normalizing_const = self.data.view(self.total_num_frames, -1).std(dim=1).mean()
-#       self.data = (self.data - self.centering_const) / self.normalizing_const
+      self.centering_const = self.data.mean()
+      self.normalizing_const = self.data.abs().mean()
 
-#     def denormalize(self, x):
-#       return x * self.normalizing_const + self.centering_const
+    def denormalize(self, x):
+      return x * self.normalizing_const + self.centering_const
 
-#     def __getitem__(self, index):
-#       index = index % (self.size if not self.overfit else self.batch_size)
-#       return self.data[index], self.data.view(-1)[0]
+    def __getitem__(self, index):
+      index = index % (self.size if not self.overfit else self.batch_size)
 
-#     def __len__(self):
-#       return self.size if not self.overfit else int(1e5)
+      raw = self.data[index]
+      raw += (torch.rand_like(raw) - .5) * 1 / 256.
+      raw = (raw - self.centering_const) / self.normalizing_const
 
-#     def __repr__(self):
-#       return ""
+      return raw, raw.view(-1)[0]
+
+    def __len__(self):
+      return self.size if not self.overfit else int(1e5)
+
+    def __repr__(self):
+      return ""
 
 # class LTI2DSequence(torch.utils.data.Dataset):
 #   def __init__(self, train=True, size=int(1e5), overfit=False, sequence_length=4, channels=4, state_dim=64 + 15, observation_dim=64):

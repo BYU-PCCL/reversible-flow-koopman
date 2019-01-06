@@ -248,7 +248,7 @@ class Trainer():
       path = checkpoints[-1]
       sd = torch.load(path)
       model.load_state_dict(sd['model'])
-      #optimizer.load_state_dict(sd['optimizer'])
+      optimizer.load_state_dict(sd['optimizer'])
 
       self.state_dict = sd['trainer']
       return path

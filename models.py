@@ -53,6 +53,7 @@ class FramePredictionBase(nn.Module):
                future_sequence_length=5,
                max_hidden_dim=128,
                log_all=True,
+               prediction_alpha=1,
                #true_hidden_dim=32,
                network:argchoice=[AffineFlowStep],
                flow:argchoice=[ReversibleFlow], inner_minimization_as_constant=True):
@@ -76,11 +77,8 @@ class FramePredictionBase(nn.Module):
     self.C = nn.Parameter(torch.Tensor(self.observation_dim, self.hidden_dim))
     # self.A = nn.Parameter(torch.Tensor(self.hidden_dim, self.hidden_dim))
 
-    self.eig_alpha = nn.Parameter(torch.Tensor(self.hidden_dim // 2))
-    self.eig_beta = nn.Parameter(torch.Tensor(self.hidden_dim // 2))
-    self.eig_beta = nn.Parameter(torch.Tensor(self.hidden_dim // 2))
-    self.scaling_lambda = nn.Parameter(torch.Tensor(1))
-
+    self.eig_alpha = nn.Parameter(torch.Tensor(self.hidden_dim // 2).double())
+    self.eig_beta = nn.Parameter(torch.Tensor(self.hidden_dim // 2).double())
 
     self.reset_parameters()
 
@@ -113,7 +111,6 @@ class FramePredictionBase(nn.Module):
     torch.nn.init.constant_(self.alpha, 0.001)
     torch.nn.init.constant_(self.eig_alpha, 0.5)
     torch.nn.init.constant_(self.eig_beta, 0.5)
-    torch.nn.init.constant_(self.scaling_lambda, 1.)
 
   def SV(self):
     #-torch.cos(self.alpha / 2.) / 2 + .5
@@ -127,8 +124,10 @@ class FramePredictionBase(nn.Module):
     # A = U[:, :self.hidden_dim].matmul(S[:, None] * V[:self.hidden_dim])
 
     # Real "Jordan" Form
-    alpha = torch.clamp(1 - torch.abs(self.eig_alpha / 10), min=0)
-    beta = torch.clamp(1 - torch.abs(self.eig_beta / 10), min=0) * torch.sqrt(1 - alpha**2)
+    # To avoid sqrt(0) when alpha = 1, we use doubles for eig_alpha and eig_beta, and a very small
+    # epsilon, it is cast back to a 32-bit float when the assignment happens to build the A matrix
+    alpha = torch.clamp((1 - 1e-14) - torch.abs(self.eig_alpha), min=0)
+    beta = torch.clamp(1 - torch.abs(self.eig_beta), min=0) * torch.sqrt(1 - alpha**2)
 
     A = torch.zeros(self.hidden_dim, self.hidden_dim).to(alpha.device)
     for i in range(self.hidden_dim // 2):
@@ -302,9 +301,6 @@ class FramePredictionBase(nn.Module):
 
     # the scaling factor should not be centered (i.e not std or var, which are computed using centered values)
     scaling_lambda = y.abs().mean()
-    self.scaling_lambda.data = .95 * self.scaling_lambda.data + .05 * scaling_lambda.data
-
-    Y = Y / scaling_lambda
 
     # Find x0*
     O, A, C = self.build_O_A(y=y, sequence_length=x.size(1), device=x.device, step=step)
@@ -394,7 +390,8 @@ class FramePredictionBase(nn.Module):
     #   Y = Y.detach()
     #   logdet = logdet.detach()
 
-    w = Y.t() - Yhat
+    # this accounts for the scaling factor, but learns an unscaled dynamic system
+    w = (Y.t() - Yhat) / scaling_lambda
 
     # print('w', w.std())
     # print('yhat', Yhat.abs().mean().item())
@@ -446,9 +443,13 @@ class FramePredictionBase(nn.Module):
     # print('scale part',  torch.log(1. / scaling_lambda))
 
       # .999965 *
-    err_std = .01
     log_likelihood = (logdet / M).mean() + torch.log(1. / scaling_lambda)
-    loss = -log_likelihood + .5 * prediction_error
+    loss = -log_likelihood + self.prediction_alpha * prediction_error
+
+    if np.isnan(loss.detach().cpu().numpy()):
+      print('loss is nan')
+      import pdb
+      pdb.set_trace()
 
     # .5 * 1/err_std * prediction_error
 
@@ -523,7 +524,6 @@ class FramePredictionBase(nn.Module):
              ':w_mean': w.mean(),
              ':w_std': w.std(),
              ':scaling_lambda': scaling_lambda,
-             ':smooth_scaling_lambda': self.scaling_lambda,
              ':normed_prederr': ((w * w).reshape(y.size()) / y.norm(dim=2, keepdim=True)).mean()
              #':Atheta': torch.arccos(.5 * (torch.trace(A) - 1)) # still untested: https://math.stackexchange.com/questions/261617/find-the-rotation-axis-and-angle-of-a-matrix
              }
@@ -534,10 +534,13 @@ class FramePredictionBase(nn.Module):
     # print(self.V.U.grad.norm())
     # print(self.alpha.grad.norm())
 
-    if self.eig_alpha.grad is not None:
-      assert not np.isnan(self.eig_alpha.grad.max().detach().cpu().numpy()), 'eig_alpha is nan: {}, {}'.format(x0, self.eig_alpha.grad, O)
-
     # for n, p in self.named_parameters():
+    #   if p.grad is not None:
+    #     if np.isnan(p.grad.max().detach().cpu().numpy()):
+    #       print('{}: {}'.format(n, p.grad))
+    #       import pdb
+    #       pdb.set_trace()
+
     #  if p.grad is not None:
     #   print('{:>15}: {:.4f}'.format(n, p.grad.norm().item()))
 
@@ -568,14 +571,10 @@ class FramePredictionBase(nn.Module):
     #                })
 
     # # if step % 10**(int(np.log10(step + 99)) - 1) == 0:
-    
-
-
-
 
     if self.log_all:
       if step % 100 == 0:
-        xhat = self.decode(self.scaling_lambda * Yhat.t()[:1], s, zlist)
+        xhat = self.decode(Yhat.t()[:1], s, zlist)
 
         #render out into the future
         state = x0[:, 0:1]
@@ -587,7 +586,7 @@ class FramePredictionBase(nn.Module):
           state = A.matmul(state)
           yfuture.append(C.matmul(state))
         yfuture = torch.cat(yfuture, dim=0).t()
-        xfuture = self.decode(self.scaling_lambda * yfuture, future_sequence_length, zlist)
+        xfuture = self.decode(yfuture, future_sequence_length, zlist)
         yfuture = yfuture.reshape(1, future_sequence_length, *x[0:1].shape[2:])
 
         # prepare the ys for logging
@@ -613,17 +612,7 @@ class FramePredictionBase(nn.Module):
                       })
 
 
-
-
-
-
-
-
-
-
-
-
-      if step % 100 ==  0:
+      if step % 500 ==  0:
         xflatsingle = x.reshape(-1, x.size(2), x.size(3), x.size(4))
         xflatsingle = xflatsingle[0:1].clone()
         xflatsingle.requires_grad = True

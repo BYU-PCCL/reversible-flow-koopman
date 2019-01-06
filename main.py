@@ -22,7 +22,8 @@ args.module('trainer', trainer.Trainer)
 args.module('scheduler', schedules)
 
 args.arguments(epochs=100, name='', batch_size=200, resume='', resume_uid='', shuffle_training=True,
-               validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=3, max_grad_norm=20, amp=True)
+               validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=3, 
+               max_grad_norm=20, amp=True)
 
 args.defaults({'optimizer.lr': .0001})
 
@@ -38,7 +39,7 @@ model_obj = model
 
 optimizer = pargs.optimizer(model.parameters())
 optimizer = pargs.optimizer([{'params': model.flow.parameters()},
-                             {'params': model.parameters(recurse=False), 'lr': 0.1}])
+                             {'params': model.parameters(recurse=False), 'lr': 0.01}])
 trainer = pargs.trainer() # _logname=pargs.stub()
 scheduler = pargs.scheduler(optimizer)
 

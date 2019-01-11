@@ -305,7 +305,7 @@ class FramePredictionBase(nn.Module):
     # Find x0*
     O, A, C = self.build_O_A(y=y, sequence_length=x.size(1), device=x.device, step=step)
 
-    if self.inner_minimization_as_constant:
+    if self.inner_minimization_as_constant or False:
       # very fast, uses QR decomposition, not differentiable
       #if not hasattr(self, 'x0'):
       # / (Y.max() - Y.min())
@@ -404,6 +404,10 @@ class FramePredictionBase(nn.Module):
     prediction_error = (w * w).mean()  # np.log(2 * np.pi)
     #prediction_error = ((w * w).reshape(y.size()) / y.norm(dim=2, keepdim=True).mean()).mean()
 
+    xhat = self.decode(Yhat, x.size(1), zlist)
+    reconstruction_loss = ((xhat - xflat)**2).mean()
+    
+
     # if not hasattr(self, 'yhat'):
     #   self.yhat = Y.t().detach().clone()
     #   self.yhat.data.normal_()
@@ -444,7 +448,7 @@ class FramePredictionBase(nn.Module):
 
       # .999965 *
     log_likelihood = (logdet / M).mean() + torch.log(1. / scaling_lambda)
-    loss = -log_likelihood + self.prediction_alpha * prediction_error
+    loss = -log_likelihood + self.prediction_alpha * prediction_error #+ reconstruction_loss
 
     if np.isnan(loss.detach().cpu().numpy()):
       print('loss is nan')

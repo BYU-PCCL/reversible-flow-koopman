@@ -85,7 +85,7 @@ def main():
 
   for (epoch, batch, step, bar), data in trainer(train_dataset, epochs=pargs.epochs, 
     progress='Training', shuffle=pargs.shuffle_training, batch_size=pargs.batch_size):
-    
+
     trainer.state_dict['step'] = step + 1 # resume starting on the next step
 
     optimizer.zero_grad()

@@ -269,7 +269,7 @@ class ReversibleFlow(nn.Module):
                          ┗━━━┛
   """
   # 3blocks 32layers
-  def __init__(self, examples, num_blocks=1, num_layers_per_block=10, squeeze_factor=2, 
+  def __init__(self, examples, num_blocks=3, num_layers_per_block=10, squeeze_factor=2, 
                inner_var_cond=False, 
                num_projections=10,
                prior:argchoice=[LogWhiteGaussian],

@@ -113,7 +113,7 @@ class RotatingCube(torch.utils.data.Dataset):
 class MovingSymbols(torch.utils.data.Dataset):
     raw = None
     def __init__(self, root="/mnt/pccfs/not_backed_up/data/cube_data/spherecube_const_pitch_yaw_16", sequence_length=10, 
-                  overfit=False, size=10000, train=False, height=16, width=16):
+                  overfit=False, size=200000, train=False, height=16, width=16):
       super(MovingSymbols, self).__init__()
 
       import sys

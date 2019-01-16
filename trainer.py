@@ -63,7 +63,7 @@ class Trainer():
                # Hide KeyboardInterrupt on the workers
                'worker_init_fn': lambda x: signal.signal(signal.SIGINT, lambda signum, frame: None)}
     dkwargs.update(kwargs)
-
+    
     dataloader = DataLoader(dataset, **dkwargs)
     
     class Gen():

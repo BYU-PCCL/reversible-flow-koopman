@@ -75,7 +75,7 @@ class FramePredictionBase(nn.Module):
     self.V = Unitary(dim=self.hidden_dim)
     self.alpha = nn.Parameter(torch.Tensor(self.hidden_dim))
     self.C = nn.Parameter(torch.Tensor(self.observation_dim, self.hidden_dim))
-    # self.A = nn.Parameter(torch.Tensor(self.hidden_dim, self.hidden_dim))
+    self.A = nn.Parameter(torch.Tensor(self.hidden_dim, self.hidden_dim))
 
     self.eig_alpha = nn.Parameter(torch.Tensor(self.hidden_dim // 2).double())
     self.eig_beta = nn.Parameter(torch.Tensor(self.hidden_dim // 2).double())
@@ -129,14 +129,21 @@ class FramePredictionBase(nn.Module):
     alpha = torch.clamp((1 - 1e-14) - torch.abs(self.eig_alpha), min=0)
     beta = torch.clamp(1 - torch.abs(self.eig_beta), min=0) * torch.sqrt(1 - alpha**2)
 
-    A = torch.zeros(self.hidden_dim, self.hidden_dim).to(alpha.device)
-    for i in range(self.hidden_dim // 2):
-      A[2 * i, 2 * i] = alpha[i]
-      A[2 * i + 1, 2 * i + 1] = alpha[i]
-      A[2 * i, 2 * i + 1] = beta[i]
-      A[2 * i + 1, 2 * i] = -beta[i]
+    with torch.cuda.device(alpha.device):
+      A = torch.cuda.FloatTensor(self.hidden_dim, self.hidden_dim)
+    
+    A.fill_(0)
 
+    A.view(-1)[::A.size(1) * 2 + 2] = alpha
+    A.view(-1)[A.size(1) + 1::A.size(1) * 2 + 2] = alpha
+    A.view(-1)[1::A.size(1) * 2 + 2] = beta
+    A.view(-1)[A.size(1)::A.size(1) * 2 + 2] = -beta
 
+    # for i in range(self.hidden_dim // 2):
+    #   A[2 * i, 2 * i] = alpha[i]
+    #   A[2 * i + 1, 2 * i + 1] = alpha[i]
+    #   A[2 * i, 2 * i + 1] = beta[i]
+    #   A[2 * i + 1, 2 * i] = -beta[i]  
 
     # print(np.trace(U.detach().cpu().numpy()))
     # print(torch.det(U))
@@ -171,7 +178,7 @@ class FramePredictionBase(nn.Module):
     # print(A - Atest)
     # exit()
 
-    A.retain_grad()
+    # A.retain_grad()
     return A
   
   '''
@@ -189,49 +196,53 @@ class FramePredictionBase(nn.Module):
     return M[:, :self.hidden_dim], M[:, self.hidden_dim:]
   '''
 
-  @utils.profile
-  def build_O_A(self, y, sequence_length, device, step):
-    A, C = self.build_A(), self.C
-    #A, C = self.n4sid(y)
+  # @utils.profile
+  # def build_O_A(self, y, sequence_length, device, step):
+  #   A, C = self.build_A(), self.C
 
-    # A = A.detach()
-    # C = C.detach()
+  #   # C = C*0 
+  #   # for i in range(self.C.view(-1).size(0)):
+  #   #   C.view(-1)[i] = i
+  #   #A, C = self.n4sid(y)
 
-    #if not hasattr(self, 'A'):
-    # A, C = utils.N4SID_simple(y[0].detach().cpu().numpy().T, 2, y.size(1) // 2, self.hidden_dim)
-    # A = torch.from_numpy(A).float().to(y.device)
-    # C = torch.from_numpy(C).float().to(y.device)
+  #   # A = A.detach()
+  #   # C = C.detach()
 
-    # np.save('/mnt/pccfs/backed_up/robert/A.npy', A.detach().cpu().numpy())
-    # np.save('/mnt/pccfs/backed_up/robert/C.npy', C.detach().cpu().numpy())
-    # np.save('/mnt/pccfs/backed_up/robert/y.npy', y.detach().cpu().numpy())
+  #   #if not hasattr(self, 'A'):
+  #   # A, C = utils.N4SID_simple(y[0].detach().cpu().numpy().T, 2, y.size(1) // 2, self.hidden_dim)
+  #   # A = torch.from_numpy(A).float().to(y.device)
+  #   # C = torch.from_numpy(C).float().to(y.device)
 
-    #np.set_printoptions(suppress=True, precision=3)
-    #print(1 / (np.linalg.eig(A.detach().cpu().numpy())[0].imag / (2 * np.pi)))
+  #   # np.save('/mnt/pccfs/backed_up/robert/A.npy', A.detach().cpu().numpy())
+  #   # np.save('/mnt/pccfs/backed_up/robert/C.npy', C.detach().cpu().numpy())
+  #   # np.save('/mnt/pccfs/backed_up/robert/y.npy', y.detach().cpu().numpy())
 
-    # self.A = A.detach()
-    # self.C = C.detach()
+  #   #np.set_printoptions(suppress=True, precision=3)
+  #   #print(1 / (np.linalg.eig(A.detach().cpu().numpy())[0].imag / (2 * np.pi)))
 
-      # np.save('/mnt/pccfs/backed_up/robert/A.npy', A.detach().cpu().numpy())
-      # np.save('/mnt/pccfs/backed_up/robert/C.npy', C.detach().cpu().numpy())
+  #   # self.A = A.detach()
+  #   # self.C = C.detach()
 
-    # else:
-    #   A = self.A
-    #   C = self.C
+  #     # np.save('/mnt/pccfs/backed_up/robert/A.npy', A.detach().cpu().numpy())
+  #     # np.save('/mnt/pccfs/backed_up/robert/C.npy', C.detach().cpu().numpy())
 
-    # C = C.detach()
-    # print('mean, absmean, max, min')
-    # print(C.mean().item(), C.abs().mean().item(), C.max().item(), C.min().item())
+  #   # else:
+  #   #   A = self.A
+  #   #   C = self.C
 
-    # Normalize C
-    # C = C / (C.max() - C.min())
+  #   # C = C.detach()
+  #   # print('mean, absmean, max, min')
+  #   # print(C.mean().item(), C.abs().mean().item(), C.max().item(), C.min().item())
 
-    O = [C]
-    for t in range(sequence_length - 1):
-       O.append(O[-1].matmul(A))
-    O = torch.cat(O, dim=0)
+  #   # Normalize C
+  #   # C = C / (C.max() - C.min())
 
-    return O, A, C
+  #   O = [C]
+  #   for t in range(sequence_length - 1):
+  #      O.append(O[-1].matmul(A))
+  #   O = torch.cat(O, dim=0)
+
+  #   return O, A, C
 
   def n4sid(self, ys):
 
@@ -303,14 +314,44 @@ class FramePredictionBase(nn.Module):
     scaling_lambda = y.abs().mean()
 
     # Find x0*
-    O, A, C = self.build_O_A(y=y, sequence_length=x.size(1), device=x.device, step=step)
+    #O, A, C = self.build_O_A(y=y, sequence_length=x.size(1), device=x.device, step=step)
+    A, C = self.build_A(), self.C
 
-    if self.inner_minimization_as_constant or False:
+    #if self.inner_minimization_as_constant or False:
       # very fast, uses QR decomposition, not differentiable
       #if not hasattr(self, 'x0'):
       # / (Y.max() - Y.min())
-      z, _ = torch.gels(Y.t(), O)
-      x0 = z[:O.size(1)].detach()
+      # z, _ = torch.gels(Y.t(), O)
+      # x0first = z[:O.size(1)].detach()
+      
+    term = C.t().matmul(C)
+    MtM = term
+    #b = y.matmul(C)
+
+    O = [C]
+    for i in range(x.size(1) - 1):
+      O.append(O[-1].matmul(A))
+      MtM += O[-1].t().matmul(O[-1])
+      #b[:, i+1:] = b[:, i+1:].matmul(A)
+
+    O = torch.cat(O, dim=0) # we can avoid constructing O if we need to
+    U = torch.potrf(MtM, upper=False)
+    rhs = Y.matmul(O) #b.sum(1) 
+    z = torch.trtrs(rhs.t(), U, transpose=False, upper=False)[0]
+    x0 = torch.trtrs(z, U, transpose=True, upper=False)[0]
+  
+    xtemp = x0
+    yhat = [C.matmul(xtemp)]
+    for i in range(x.size(1) - 1):
+      xtemp = A.matmul(xtemp)
+      yhat.append(C.matmul(xtemp))
+
+    Yhat = torch.cat(yhat, dim=0)
+
+      #print(x0first - x0)
+
+      # y - M(M'M)M'y
+      # (I - M(M'M)M')y
 
       # RO = O.clone()
       # RY = Y.t().clone()
@@ -339,17 +380,17 @@ class FramePredictionBase(nn.Module):
       # for rank deficent case
       #x0, resid, rank, sv = np.linalg.lstsq(O.detach().cpu().numpy(), Y.t().detach().cpu().numpy(), rcond=1e-3)
       #x0 = torch.from_numpy(x0).to(O.device)
-    else:
-      # This method is slower than using the QR decomposition, but torch.qr does not yet have gradients defined
-      # see: https://github.com/pytorch/pytorch/blob/master/tools/autograd/derivatives.yaml#L618
-      # to see if things have changed
-      # Instead, we use the cholesky decomposition of O'O 
-      U = torch.potrf(O.t().matmul(O), upper=False)
-      rhs = Y.matmul(O)
-      z = torch.trtrs(rhs.t(), U, transpose=False, upper=False)[0]
-      x0 = torch.trtrs(z, U, transpose=True, upper=False)[0]
+    # else:
+    #   # This method is slower than using the QR decomposition, but torch.qr does not yet have gradients defined
+    #   # see: https://github.com/pytorch/pytorch/blob/master/tools/autograd/derivatives.yaml#L618
+    #   # to see if things have changed
+    #   # Instead, we use the cholesky decomposition of O'O 
+    #   U = torch.potrf(O.t().matmul(O), upper=False)
+    #   rhs = Y.matmul(O)
+    #   z = torch.trtrs(rhs.t(), U, transpose=False, upper=False)[0]
+    #   x0 = torch.trtrs(z, U, transpose=True, upper=False)[0]
     
-    Yhat = O.matmul(x0) # * 0 #+ 10
+    #   Yhat = O.matmul(x0) # * 0 #+ 10
 
     # Yhat = Yha`t - Yhat.mean()
     # Yhat = Yhat / (Yhat.max() - Yhat.min())
@@ -404,8 +445,8 @@ class FramePredictionBase(nn.Module):
     prediction_error = (w * w).mean()  # np.log(2 * np.pi)
     #prediction_error = ((w * w).reshape(y.size()) / y.norm(dim=2, keepdim=True).mean()).mean()
 
-    xhat = self.decode(Yhat, x.size(1), zlist)
-    reconstruction_loss = ((xhat - xflat)**2).mean()
+    # xhat = self.decode(Yhat, x.size(1), zlist)
+    # reconstruction_loss = ((xhat - xflat)**2).mean()
     
 
     # if not hasattr(self, 'yhat'):
@@ -617,26 +658,26 @@ class FramePredictionBase(nn.Module):
 
 
       if step % 500 ==  0:
-        xflatsingle = x.reshape(-1, x.size(2), x.size(3), x.size(4))
-        xflatsingle = xflatsingle[0:1].clone()
-        xflatsingle.requires_grad = True
-        _, (zcatsingle, zlistsingle, _) = self.flow(step, xflatsingle)
-        # jac = jacobian(zcatsingle, xflatsingle)
+        # xflatsingle = x.reshape(-1, x.size(2), x.size(3), x.size(4))
+        # xflatsingle = xflatsingle[0:1].clone()
+        # xflatsingle.requires_grad = True
+        # _, (zcatsingle, zlistsingle, _) = self.flow(step, xflatsingle)
+        # # jac = jacobian(zcatsingle, xflatsingle)
+        # # svs = torch.svd(jac)[1]
+
+        # # stats.update({':jacforward': jac.unsqueeze(0),
+        # #               ':jacforward_norm_max': svs.max(),
+        # #               ':jacforward_norm_min': svs.min(),
+        # #               ':jacforward_svs': svs})
+
+        # xlistsingle, _ = self.flow.decode(zlistsingle)
+
+        # jac = jacobian(xlistsingle, zlistsingle)
         # svs = torch.svd(jac)[1]
-
-        # stats.update({':jacforward': jac.unsqueeze(0),
-        #               ':jacforward_norm_max': svs.max(),
-        #               ':jacforward_norm_min': svs.min(),
-        #               ':jacforward_svs': svs})
-
-        xlistsingle, _ = self.flow.decode(zlistsingle)
-
-        jac = jacobian(xlistsingle, zlistsingle)
-        svs = torch.svd(jac)[1]
-        stats.update({':jacbackward': jac.unsqueeze(0),
-                      ':jacbackward_norm_max': svs.max(),
-                      ':jacbackward_norm_min': svs.min(),
-                      ':jacbackward_percent_bad_svs': (svs > 1).float().mean()})
+        # stats.update({':jacbackward': jac.unsqueeze(0),
+        #               ':jacbackward_norm_max': svs.max(),
+        #               ':jacbackward_norm_min': svs.min(),
+        #               ':jacbackward_percent_bad_svs': (svs > 1).float().mean()})
 
         u, svs, v = torch.svd(A)
         stats.update({#':gO': O.grad.unsqueeze(0),

@@ -1,0 +1,13 @@
+.idea/
+.env/
+data/icons8/
+data/mnist/
+data/omniglot/
+data/sun_bg/
+backgrounds/
+output
+output/
+*.avi
+*.npy
+*.pyc
+*.mat

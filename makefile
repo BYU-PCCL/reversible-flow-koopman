@@ -27,6 +27,23 @@ test:
 	python3 main.py --
 
 experiment:
+	CUDA_VISIBLE_DEVICES=0 python main.py --name=512-d10 --model.flow.flow.f.hidden=512 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=1 python main.py --name=256-d10 --model.flow.flow.f.hidden=256 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=2 python main.py --name=128-d10 --model.flow.flow.f.hidden=128 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=3 python main.py --name=64-d10  --model.flow.flow.f.hidden=64  --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=5 python main.py --name=256-d20 --model.flow.flow.f.hidden=256 --model.flow.num_layers_per_block=20 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=6 python main.py --name=128-d20 --model.flow.flow.f.hidden=128 --model.flow.num_layers_per_block=20 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=7 python main.py --name=64-d20  --model.flow.flow.f.hidden=64  --model.flow.num_layers_per_block=20 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=8 python main.py --name=256-d40 --model.flow.flow.f.hidden=256 --model.flow.num_layers_per_block=40 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=9 python main.py --name=128-d40 --model.flow.flow.f.hidden=128 --model.flow.num_layers_per_block=40 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=10 python main.py --name=64-d40  --model.flow.flow.f.hidden=64  --model.flow.num_layers_per_block=40 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+
+	# CUDA_VISIBLE_DEVICES=1 python main.py --name=invertible     --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=Invertible1x1Conv &
+	# CUDA_VISIBLE_DEVICES=2 python main.py --name=orthogonal     --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=Orthogonal1x1Conv &
+	# CUDA_VISIBLE_DEVICES=3 python main.py --name=glowloss                                  --train_dataset.sequence_length=2  --model=GlowPrediction &
+	# CUDA_VISIBLE_DEVICES=4 python main.py --name=realjordan     --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.A=StableRealJordanForm --resume=realjordan-01-17-071955 --optimizer.lr=0.00001 &
+	# CUDA_VISIBLE_DEVICES=5 python main.py --name=svd            --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.A=StableSVD
+
 	# CUDA_VISIBLE_DEVICES=0 python3 main.py --name=exp1 --model.num_layers_per_block=15 --epochs=40 --model.flow.safescaler=SigmoidShiftScaler &
 	# CUDA_VISIBLE_DEVICES=1 python3 main.py --name=exp1 --model.num_layers_per_block=15 --epochs=40 --model.flow.safescaler=AdditiveOnlyShiftScaler &
 	# CUDA_VISIBLE_DEVICES=2 python3 main.py --name=exp1 --model.num_layers_per_block=15 --epochs=40 --model.flow.safescaler=GlowShift &

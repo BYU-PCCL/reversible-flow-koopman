@@ -14,16 +14,16 @@ import atexit
 
 #from apex import amp
 
-args.module('model', models.FramePredictionBase)
+args.module('model', [models.FramePredictionBase, models.GlowPrediction])
 args.module('optimizer', torch.optim, default=torch.optim.Adam)
 args.module('train_dataset', datasets)
 args.module('validation_dataset', datasets)
 args.module('trainer', trainer.Trainer)
 args.module('scheduler', schedules)
 
-args.arguments(epochs=100, name='', batch_size=200, resume='', resume_uid='', shuffle_training=True,
+args.arguments(epochs=100, name='exp', batch_size=100, resume='', resume_uid='', shuffle_training=True,
                validation_frequency=5000, checkpoint_frequency=1000, cuda=True, print_model=False, max_grad=3, 
-               max_grad_norm=20, amp=True)
+               max_grad_norm=20, amp=True, checkpoint=True)
 
 args.defaults({'optimizer.lr': .0001})
 
@@ -39,8 +39,9 @@ model_obj = model
 
 optimizer = pargs.optimizer(model.parameters())
 optimizer = pargs.optimizer([{'params': model.flow.parameters()},
-                             {'params': model.parameters(recurse=False), 'lr': 0.01}])
-trainer = pargs.trainer() # _logname=pargs.stub()
+                             {'params': model.parameters(recurse=False), 'lr': 0.01}] +
+                             ([{'params': model.A.parameters(), 'lr': 0.01}] if hasattr(model, 'A') else []))
+trainer = pargs.trainer(_logname=pargs.name)
 scheduler = pargs.scheduler(optimizer)
 
 if pargs.cuda:
@@ -81,7 +82,8 @@ def main():
   #amp_handle = amp.init(enabled=True)
 
   # save a checkpoint at exit, regardless of the reason
-  atexit.register(trainer.checkpoint, model, optimizer, tag='exit', log=print)
+  if pargs.checkpoint:
+    atexit.register(trainer.checkpoint, model, optimizer, tag='exit', log=print)
 
   for (epoch, batch, step, bar), data in trainer(train_dataset, epochs=pargs.epochs, 
     progress='Training', shuffle=pargs.shuffle_training, batch_size=pargs.batch_size):
@@ -95,58 +97,13 @@ def main():
     loss_value, out = model(step, *data)
     loss_value = loss_value.mean() # multi-gpu accumulation
     
-    torch.cuda.synchronize()
-
     loss_value.backward()
-    #with amp_handle.scale_loss(loss_value, optimizer) as scaled_loss:
-    #  scaled_loss.backward()
-
-    # import math
-
-    # names = {p:name for name, p in model.named_parameters()}
-
-    # for group in optimizer.param_groups:
-    #   for p in group['params']:
-    #     group['amsgrad'] = True
-    #     group['eps'] = 1e-8
-    #       if p.grad is None:
-    #           continue
-    #       grad = p.grad.data
-    #       if grad.is_sparse:
-    #           raise RuntimeError('Adam does not support sparse gradients, please consider SparseAdam instead')
-    #       amsgrad = group['amsgrad']
-
-    #       state = optimizer.state[p]
-
-    #       exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
-    #       if amsgrad:
-    #           max_exp_avg_sq = state['max_exp_avg_sq']
-    #       beta1, beta2 = group['betas']
-
-    #       # Decay the first and second moment running average coefficient
-    #       exp_avg.mul_(beta1).add_(1 - beta1, grad)
-    #       exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
-    #       if amsgrad:
-    #           # Maintains the maximum of all 2nd moment running avg. till now
-    #           torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
-    #           # Use the max. for normalizing running avg. of gradient
-    #           denom = max_exp_avg_sq.sqrt().add_(group['eps'])
-    #       else:
-    #           denom = exp_avg_sq.sqrt().add_(group['eps'])
-
-    #       bias_correction1 = 1 - beta1 ** state['step']
-    #       bias_correction2 = 1 - beta2 ** state['step']
-    #       step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
-
-    #       group['eps'] = 1e-3
-
-    #       if step_size * (exp_avg / denom).max() > step_size:
-    #         print('{:>40} {:.3f},{:.3f},{:.3f}   {:.4f} '.format(names[p], step_size, exp_avg.max(), denom.min(), step_size * (exp_avg / denom).max()))
-
-    # print('loss', loss_value.item())
 
     mlog = model_obj.logger(step, data, out)
     trainer.log(step, loss=loss_value, m=mlog)
+    
+    #with amp_handle.scale_loss(loss_value, optimizer) as scaled_loss:
+    #  scaled_loss.backward()
     
     # TODO: validation logging isn't working well, but I don't need it right now
     # if step % pargs.validation_frequency == 0 and step != 0:

@@ -17,6 +17,13 @@ profile = builtins.__dict__.get('profile', lambda x: x)
 #         return inner
 #     return wrapper
 
+def logv(string=""):
+    import inspect
+    frameinfo = inspect.getframeinfo(inspect.currentframe().f_back)
+    memusage = torch.cuda.memory_allocated()
+    maxmemusage = torch.cuda.max_memory_allocated()
+    print('[{}/{}]:{} {:.3f}gb gpu memusage {}gb max {}'.format(frameinfo.filename, frameinfo.function, frameinfo.lineno, memusage * 1e-9,  maxmemusage * 1e-9, string))
+
 def block2mat(Mblock):
     Nr,Nc,bh,bw = Mblock.shape
     M = np.zeros((Nr*bh,Nc*bw))

@@ -63,7 +63,7 @@ class ReversePermutation(nn.Module):
 
   def forward(self, x, reverse=False):
     x1, x2 = torch.chunk(x, 2, dim=1)
-    return torch.cat([x2, x1], dim=1)
+    return torch.cat([x2, x1], dim=1), 0
     #return x.flip(1)
 
 class NullPermutation(nn.Module):
@@ -71,7 +71,139 @@ class NullPermutation(nn.Module):
     super(NullPermutation, self).__init__()
 
   def forward(self, x, reverse=False):
-    return x
+    return x, 0
+
+class Unitary(nn.Module):
+  def __init__(self, dim, fast=True):
+    self.__dict__.update(locals())
+    super(Unitary, self).__init__()
+
+    if fast:
+      assert ((dim & (dim - 1)) == 0) and dim > 0, 'dim must be a power of two for fast computation'
+
+    self.U = nn.Parameter(torch.Tensor(dim, dim))
+    self.reset_parameters()
+  
+  def reset_parameters(self):
+    torch.nn.init.xavier_uniform_(self.U)
+    self.U.data /= self.U.norm(dim=1, keepdim=True)
+
+    self.U.data *= 0
+    self.U.data.view(-1)[::self.U.size(1) + 1] += 1
+
+  def multi_matmul(self, M, left=None, right=None):
+    left = left or 0
+    right = right or len(M)
+
+    if right - left == 1:
+      return M[left]
+
+    return torch.matmul(self.multi_matmul(M, left=(left + right)//2, right=right), 
+                        self.multi_matmul(M, left=left, right=(left + right)//2))
+
+  def multi_matmul_power_of_two(self, M):
+    n = int(M.size(0))
+    for i in range(n.bit_length() - 1):
+      n = n >> 1
+      M = torch.bmm(M[:n], M[n:])
+    return M[0]
+
+  def get(self):
+    Unorm = self.U / self.U.norm(dim=1, keepdim=True)
+    UH = torch.bmm(Unorm.unsqueeze(2), -2 * Unorm.unsqueeze(1))
+    UH.reshape(UH.size(0), -1)[:, ::UH.size(1)+1] += 1
+
+    if self.fast:
+      U = self.multi_matmul_power_of_two(UH)
+    else:
+      U = self.multi_matmul(UH)
+      
+    return U
+
+class Orthogonal1x1Conv(nn.Module):
+  def __inti__(self):
+    super(Orthogonal1x1Conv, self).__init__()
+
+  def lazy_init(self, x):
+    if not hasattr(self, '_initialized'):
+      self._initialized = True
+      dim = x.shape[1]
+      self.W = Unitary(dim, fast=((dim & (dim - 1)) == 0) and dim > 0)
+
+  def forward(self, x, reverse=False):
+    self.lazy_init(x)
+    weight = self.W.get().t() if reverse else self.W.get()
+    z = F.conv2d(x, weight.unsqueeze(2).unsqueeze(2))
+    return z, 0
+
+class Invertible1x1Conv(nn.Module):
+  def __init__(self, LU_decomposed=False):
+    super().__init__()
+    self.LU = LU_decomposed
+
+  def lazy_init(self, x):
+    if not hasattr(self, '_initialized'):
+      self._initialized = True
+      num_channels = x.size(1)
+      w_shape = [num_channels, num_channels]
+      w_init = np.linalg.qr(np.random.randn(*w_shape))[0].astype(np.float32)
+      if not self.LU:
+        # Sample a random orthogonal matrix:
+        self.register_parameter("weight", nn.Parameter(torch.Tensor(w_init)))
+      else:
+        np_p, np_l, np_u = scipy.linalg.lu(w_init)
+        np_s = np.diag(np_u)
+        np_sign_s = np.sign(np_s)
+        np_log_s = np.log(np.abs(np_s))
+        np_u = np.triu(np_u, k=1)
+        l_mask = np.tril(np.ones(w_shape, dtype=np.float32), -1)
+        eye = np.eye(*w_shape, dtype=np.float32)
+
+        self.p = torch.Tensor(np_p.astype(np.float32))
+        self.sign_s = torch.Tensor(np_sign_s.astype(np.float32))
+        self.l = nn.Parameter(torch.Tensor(np_l.astype(np.float32)))
+        self.log_s = nn.Parameter(torch.Tensor(np_log_s.astype(np.float32)))
+        self.u = nn.Parameter(torch.Tensor(np_u.astype(np.float32)))
+        self.l_mask = torch.Tensor(l_mask)
+        self.eye = torch.Tensor(eye)
+      self.w_shape = w_shape
+
+  def get_weight(self, input, reverse):
+      w_shape = self.w_shape
+      if not self.LU:
+        pixels = np.prod(input.shape[-2:])
+        dlogdet = torch.slogdet(self.weight)[1] * pixels
+        if not reverse:
+            weight = self.weight.view(w_shape[0], w_shape[1], 1, 1)
+        else:
+            weight = torch.inverse(self.weight.double()).float()\
+                          .view(w_shape[0], w_shape[1], 1, 1)
+        return weight, dlogdet
+      else:
+        self.p = self.p.to(input.device)
+        self.sign_s = self.sign_s.to(input.device)
+        self.l_mask = self.l_mask.to(input.device)
+        self.eye = self.eye.to(input.device)
+        l = self.l * self.l_mask + self.eye
+        u = self.u * self.l_mask.transpose(0, 1).contiguous() + torch.diag(self.sign_s * torch.exp(self.log_s))
+        dlogdet = thops.sum(self.log_s) * thops.pixels(input)
+        if not reverse:
+          w = torch.matmul(self.p, torch.matmul(l, u))
+        else:
+          l = torch.inverse(l.double()).float()
+          u = torch.inverse(u.double()).float()
+          w = torch.matmul(u, torch.matmul(l, self.p.inverse()))
+        return w.view(w_shape[0], w_shape[1], 1, 1), dlogdet
+
+  def forward(self, input, reverse=False):
+      """
+      log-det = log|abs(|W|)| * pixels
+      """
+      self.lazy_init(input)
+
+      weight, dlogdet = self.get_weight(input, reverse)
+      z = F.conv2d(input, weight)
+      return z, dlogdet
 
 class Squeeze(nn.Module):
   def __init__(self, factor=2):
@@ -274,7 +406,7 @@ class ReversibleFlow(nn.Module):
                num_projections=10,
                prior:argchoice=[LogWhiteGaussian],
                flow:argchoice=[AffineFlowStep], 
-               permute:argchoice=[ReversePermutation, NullPermutation]):
+               permute:argchoice=[ReversePermutation, NullPermutation, Invertible1x1Conv, Orthogonal1x1Conv]):
 
     self.__dict__.update(locals())
     super(ReversibleFlow, self).__init__()
@@ -311,10 +443,10 @@ class ReversibleFlow(nn.Module):
 
       for K in range(self.num_layers_per_block):
         # permute
-        z = self.permutes[L][K](z)
+        z, plogdet = self.permutes[L][K](z)
 
         z, logdet = self.flows[L][K](z, K=K)
-        loglikelihood_accum += logdet
+        loglikelihood_accum += logdet + plogdet
 
       # split hierarchical 
       z1, z2 = torch.chunk(z, 2, dim=1)
@@ -344,10 +476,12 @@ class ReversibleFlow(nn.Module):
       for K in reversed(range(self.num_layers_per_block)):
         
         z, logdet = self.flows[L][K](z, reverse=True)
-        loglikelihood_accum -= logdet
 
         # unpermute
-        z = self.permutes[L][K](z, reverse=True)
+        z, plogdet = self.permutes[L][K](z, reverse=True)
+
+        loglikelihood_accum -= logdet + plogdet
+
 
       # unsqueeze
       z = self.squeezes[L](z, reverse=True)
@@ -358,24 +492,26 @@ class ReversibleFlow(nn.Module):
     self.eval()
     z, logdet = self.encode(x)
     xhat, logdet_zero = self.decode(z, logdet)
-    assert (xhat - x).abs().max() < 1e-7, (xhat - x).abs().max().item()
+    assert (xhat - x).abs().max() < 1.5e-5, (xhat - x).abs().max().item()
     assert logdet_zero.abs().max() < 1e-1, logdet_zero.abs().max().item()
     self.train()
 
-  def forward(self, step, x):
+  def forward(self, step, x, loss=True):
+
     z, loglikelihood_accum = self.encode(x)
 
     zcat = torch.cat([m.reshape(m.size(0), -1) for m in z], dim=1)
 
-    M = float(np.prod(x.shape[1:]))
-    discretization_correction = float(-np.log(256)) * M
-    log_likelihood = self.logprior(zcat) + loglikelihood_accum #+ discretization_correction
-    loss = -log_likelihood
-    
-    # the following command requires a sync operation
-    # it should be as low in this function as possible
-    loss = loss.mean() / float(np.log(2.) * M)
-    #assert not np.isnan(loss.item()), 'loss is nan'
+    if loss:
+      M = float(np.prod(x.shape[1:]))
+      discretization_correction = float(-np.log(256)) * M
+      log_likelihood = self.logprior(zcat) + loglikelihood_accum #+ discretization_correction
+      loss = -log_likelihood
+      
+      # the following command requires a sync operation
+      # it should be as low in this function as possible
+      loss = loss.mean() / float(np.log(2.) * M)
+      #assert not np.isnan(loss.item()), 'loss is nan'
     
     return loss, (zcat, z, loglikelihood_accum)
 

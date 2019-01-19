@@ -112,11 +112,12 @@ class RotatingCube(torch.utils.data.Dataset):
 
 class MovingSymbols(torch.utils.data.Dataset):
     raw = None
-    def __init__(self, root="/mnt/pccfs/not_backed_up/data/cube_data/spherecube_const_pitch_yaw_16", sequence_length=10, 
-                  overfit=False, size=200000, train=False, height=16, width=16):
+    def __init__(self, root="./libs/moving-symbols/data", sequence_length=10, 
+                  overfit=False, size=20000, train=False, height=16, width=16):
       super(MovingSymbols, self).__init__()
 
       import sys
+      import os
       sys.path.append('./libs/moving-symbols/moving_symbols')
       from moving_symbols import MovingSymbolsEnvironment
 
@@ -124,7 +125,7 @@ class MovingSymbols(torch.utils.data.Dataset):
       self.batch_size = args.reader().batch_size
 
       self.params = {
-        'data_dir':'./libs/moving-symbols/data/mnist',
+        'data_dir': os.path.join(root, 'mnist'),
         'split': 'training',
         'color_output': True,
         'symbol_labels': range(10),
@@ -135,12 +136,22 @@ class MovingSymbols(torch.utils.data.Dataset):
 
       self.size = size if not self.overfit else self.batch_size
 
-      raw = []
-      from tqdm import tqdm
-      for s in tqdm(range(self.size), desc='Building Dataset', leave=False):
-        env = MovingSymbolsEnvironment(self.params, np.random.randint(0, 1))
-        raw.append(np.array([np.asarray(env.next()) for _ in range(sequence_length)]) / 255.)
-      raw = np.array(raw)
+      save_location = os.path.join(root, 'moving_symbols_{}.{}.{}.{}.npy'.format(size, height, width, sequence_length))
+
+      if os.path.isfile(save_location):
+        raw = np.load(save_location)
+      else:
+        raw = []
+        from tqdm import tqdm
+        for s in tqdm(range(self.size), desc='Building Dataset', leave=False):
+          env = MovingSymbolsEnvironment(self.params, np.random.randint(0, 1))
+          raw.append(np.array([np.asarray(env.next()) for _ in range(sequence_length)]) / 255.)
+        raw = np.array(raw)
+        if raw.nbytes < 1e10:
+          print('Attempting to save {} bytes'.format(raw.nbytes))
+          np.save(save_location, raw)
+        else:
+          print(raw.nbytes, 'is too big to save')
 
       self.data = torch.from_numpy(raw.astype(np.float32)).permute(0, 1, 4, 2, 3).contiguous()
       

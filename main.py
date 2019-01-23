@@ -45,8 +45,8 @@ trainer = pargs.trainer(_logname=pargs.name)
 scheduler = pargs.scheduler(optimizer)
 
 if pargs.cuda:
-  model = torch.nn.DataParallel(model)
-  model_obj = model.module
+ #model = torch.nn.DataParallel(model)
+  #model_obj = model.module
   model.cuda()
   trainer.cuda()
 
@@ -97,10 +97,10 @@ def main():
     loss_value, out = model(step, *data)
     loss_value = loss_value.mean() # multi-gpu accumulation
     
-    loss_value.backward()
+    #loss_value.backward()
 
-    mlog = model_obj.logger(step, data, out)
-    trainer.log(step, loss=loss_value, m=mlog)
+    #mlog = model_obj.logger(step, data, out)
+    #trainer.log(step, loss=loss_value, m=mlog)
     
     #with amp_handle.scale_loss(loss_value, optimizer) as scaled_loss:
     #  scaled_loss.backward()
@@ -125,8 +125,8 @@ def main():
     #     path = trainer.checkpoint(model, optimizer, tag='best_training', log=bar.write)
 
     #torch.nn.utils.clip_grad_value_(model.parameters(), pargs.max_grad)
-    torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
-    optimizer.step()
+    #torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
+    #optimizer.step()
 
     if scheduler.step(step):
       trainer.log(step, lr=scheduler.lr(step))

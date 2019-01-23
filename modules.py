@@ -6,6 +6,7 @@ import numpy as np
 import pdb
 import utils
 
+from torch.utils import checkpoint
 import einops
 
 class Network(nn.Module):
@@ -13,10 +14,13 @@ class Network(nn.Module):
     self.__dict__.update(locals())
     super(Network, self).__init__()
 
+    checkpoint.preserve_rng_state = False
+
   def lazy_init(self, x):
     if not hasattr(self, '_initialized'):
       self._initialized = True
       b, c, h, w = x.size()
+
 
       self.net = nn.Sequential(
         nn.Conv2d(c, self.hidden, 3, stride=1, padding=1),
@@ -34,7 +38,9 @@ class Network(nn.Module):
   def forward(self, x):
     self.lazy_init(x)
 
-    h = self.net(x)
+    #h = self.net(x)
+    h = checkpoint.checkpoint_sequential(list(self.net.children()), 1, x)
+
     shift = h[:, 0::2].contiguous()
     scale = h[:, 1::2].contiguous()
 
@@ -401,7 +407,7 @@ class ReversibleFlow(nn.Module):
                          ┗━━━┛
   """
   # 3blocks 32layers
-  def __init__(self, examples, num_blocks=3, num_layers_per_block=10, squeeze_factor=2, 
+  def __init__(self, examples, num_blocks=4, num_layers_per_block=10, squeeze_factor=2, 
                inner_var_cond=False, 
                num_projections=10,
                prior:argchoice=[LogWhiteGaussian],
@@ -447,6 +453,8 @@ class ReversibleFlow(nn.Module):
 
         z, logdet = self.flows[L][K](z, K=K)
         loglikelihood_accum += logdet + plogdet
+
+        utils.logv()
 
       # split hierarchical 
       z1, z2 = torch.chunk(z, 2, dim=1)

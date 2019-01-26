@@ -24,10 +24,10 @@ class Network(nn.Module):
 
       self.net = nn.Sequential(
         nn.Conv2d(c, self.hidden, 3, stride=1, padding=1),
-        nn.LeakyReLU(inplace=True),
+        nn.ReLU(inplace=True),
         #nn.Dropout2d(p=0.3),
         nn.Conv2d(self.hidden, self.hidden, 1, stride=1, padding=0),
-        nn.LeakyReLU(inplace=True),
+        nn.ReLU(inplace=True),
         #nn.Dropout2d(p=0.3),
         nn.Conv2d(self.hidden, c * 2, 3, stride=1, padding=1))
 
@@ -36,11 +36,10 @@ class Network(nn.Module):
       self.net[-1].bias.data.fill_(0)
 
   def forward(self, x):
+
     self.lazy_init(x)
-
-    #h = self.net(x)
-    h = checkpoint.checkpoint_sequential(list(self.net.children()), 1, x)
-
+    h = self.net(x)
+    
     shift = h[:, 0::2].contiguous()
     scale = h[:, 1::2].contiguous()
 
@@ -69,7 +68,8 @@ class ReversePermutation(nn.Module):
 
   def forward(self, x, reverse=False):
     x1, x2 = torch.chunk(x, 2, dim=1)
-    return torch.cat([x2, x1], dim=1), 0
+    x = torch.cat([x2, x1], dim=1)
+    return x, 0
     #return x.flip(1)
 
 class NullPermutation(nn.Module):
@@ -217,23 +217,24 @@ class Squeeze(nn.Module):
     self.factor = factor
 
   def forward(self, x, reverse=False):
-    if reverse:
-      return einops.rearrange(x, 'b (c h2 w2) h w -> b c (h h2) (w w2)', h2=self.factor, w2=self.factor)
-    else:
-      return einops.rearrange(x, 'b c (h h2) (w w2) -> b (c h2 w2) h w', h2=self.factor, w2=self.factor)
+    # if reverse:
+    #   return einops.rearrange(x, 'b (c h2 w2) h w -> b c (h h2) (w w2)', h2=self.factor, w2=self.factor)
+    # else:
+    #   return einops.rearrange(x, 'b c (h h2) (w w2) -> b (c h2 w2) h w', h2=self.factor, w2=self.factor)
     
     ##
     # the above is slightly faster, but equivalent to the following:
     ##
-    # b, c, h, w = x.size()
-    # if reverse:
-    #   return F.fold(x.view(b, c, -1), (h * self.factor, w * self.factor), 
-    #             kernel_size=(self.factor, self.factor), 
-    #             stride=self.factor, dilation=1, padding=0)
-    # else:
-    #   y = F.unfold(x, (self.factor, self.factor), 
-    #               stride=self.factor, dilation=1, padding=0)
-    #   return y.view(b, -1, h // self.factor, w // self.factor)
+    b, c, h, w = x.size()
+    if reverse:
+      return F.fold(x.view(b, c, -1), (h * self.factor, w * self.factor), 
+                kernel_size=(self.factor, self.factor), 
+                stride=self.factor, dilation=1, padding=0)
+    else:
+      x = F.unfold(x, (self.factor, self.factor), 
+                       stride=self.factor, dilation=1, padding=0)
+      x = x.reshape(b, -1, h // self.factor, w // self.factor)
+      return x
     
 class LogGaussian(nn.Module):
   log_2pi = float(np.log(2 * np.pi))
@@ -363,12 +364,10 @@ class AffineFlowStep(nn.Module):
         z2, logdet_actnorm = self.actnorm(z2)
         logdet += logdet_actnorm
 
-      z2 += shift
-      z2 *= safescale
+      z2 = (z2 + shift) * safescale
 
     else:
-      z2 /= safescale
-      z2 -= shift
+      z2 = (z2 / safescale) - shift
 
       if self.actnorm:
         z2, logdet_actnorm = self.actnorm(z2, reverse=True)
@@ -412,7 +411,8 @@ class ReversibleFlow(nn.Module):
                num_projections=10,
                prior:argchoice=[LogWhiteGaussian],
                flow:argchoice=[AffineFlowStep], 
-               permute:argchoice=[ReversePermutation, NullPermutation, Invertible1x1Conv, Orthogonal1x1Conv]):
+               permute:argchoice=[ReversePermutation, NullPermutation, Invertible1x1Conv, Orthogonal1x1Conv],
+               checkpoint_gradients=False):
 
     self.__dict__.update(locals())
     super(ReversibleFlow, self).__init__()
@@ -442,6 +442,7 @@ class ReversibleFlow(nn.Module):
 
     zout = []
     z = x.clone()
+    z.requires_grad = True
 
     for L in range(self.num_blocks):
       # squeeze - ensures the channel dimension is divisible by 2
@@ -451,15 +452,29 @@ class ReversibleFlow(nn.Module):
         # permute
         z, plogdet = self.permutes[L][K](z)
 
-        z, logdet = self.flows[L][K](z, K=K)
-        loglikelihood_accum += logdet + plogdet
+        if self.checkpoint_gradients:
+          z, logdet = utils.checkpoint(self.flows[L][K], z)
+        else:
+          z, logdet = self.flows[L][K](z)
+          
+        loglikelihood_accum = loglikelihood_accum + (logdet + plogdet)
 
-        utils.logv()
-
+        del plogdet
+        del logdet
+ 
       # split hierarchical 
+      # this operation returns two non-contiguous blocks
+      # with references to the original z tensor
+      # if we do not call .contiguous() (or .clone()) on BOTH z1 and z2, 
+      # then the entire z tensor must be kept around
+      # the del operators just do a little cleanup to avoid a (very) slight memory bump
       z1, z2 = torch.chunk(z, 2, dim=1)
+      z1 = z1.contiguous()
+      z2 = z2.contiguous()
       zout.append(z1)
+      del z
       z = z2
+      del z2
 
     zout.append(z)
 
@@ -490,7 +505,6 @@ class ReversibleFlow(nn.Module):
 
         loglikelihood_accum -= logdet + plogdet
 
-
       # unsqueeze
       z = self.squeezes[L](z, reverse=True)
 
@@ -498,10 +512,11 @@ class ReversibleFlow(nn.Module):
 
   def test(self, x):
     self.eval()
-    z, logdet = self.encode(x)
-    xhat, logdet_zero = self.decode(z, logdet)
-    assert (xhat - x).abs().max() < 1.5e-5, (xhat - x).abs().max().item()
-    assert logdet_zero.abs().max() < 1e-1, logdet_zero.abs().max().item()
+    with torch.no_grad():
+      z, logdet = self.encode(x)
+      xhat, logdet_zero = self.decode(z, logdet)
+      assert (xhat - x).abs().max() < 1.5e-5, (xhat - x).abs().max().item()
+      assert logdet_zero.abs().max() < 1e-1, logdet_zero.abs().max().item()
     self.train()
 
   def forward(self, step, x, loss=True):

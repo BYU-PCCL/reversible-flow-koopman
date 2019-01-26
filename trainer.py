@@ -23,7 +23,7 @@ import traceback
 import pdb
 
 class Trainer():
-  def __init__(self, logdir='./logs/', savedir='./checkpoints/', _logname='exp', debug=False, benchmark=True, profile_burnin=100, profile_stats=False, num_workers=5, pin_memory=True, **kwargs):
+  def __init__(self, logdir='./logs/', savedir='./checkpoints/', _logname='exp', debug=False, benchmark=False, profile_burnin=20, profile_stats=False, num_workers=5, pin_memory=True, **kwargs):
     self.__dict__.update(locals())
     self.__dict__.update(kwargs)
     self._last_log = {}
@@ -44,7 +44,7 @@ class Trainer():
     # self._log_thread = threading.Thread(target=self._log_thread_run, daemon=True)
     # self._log_thread.start()
 
-    torch.backends.cudnn.benchmark=benchmark
+    torch.backends.cudnn.benchmark = benchmark
 
   def _processpostfix(self):
     d = self.postfix()
@@ -105,11 +105,23 @@ class Trainer():
                       trainer.run_duration = profile_alpha * trainer.run_duration + (1 - profile_alpha) * (after_run - before_run)
                       trainer.dataload_fraction = trainer.load_duration / (trainer.run_duration + trainer.load_duration)
 
-                    if utils.is_profile and step >= trainer.profile_burnin:
-                      bar.clear()
-                      print(prof.key_averages().table('cpu_time_total'))
-                      utils.profile.print_stats()
-                      exit()
+                if utils.is_profile and step >= trainer.profile_burnin:
+                  bar.clear()
+                  print(prof.key_averages().table('cpu_time_total'))
+                  utils.profile.print_stats()
+                  exit()
+
+                if trainer.profile_stats or utils.is_profile:
+                  stats = utils.gpustats()
+                  trainer._last_log['maxmem'] = '{0:.1%}'.format(stats['maxmemusage'])
+                  trainer._last_log['tmem:'] = '{0:.3f}gb'.format(torch.cuda.memory_allocated() * 1e-9)
+                  trainer._last_log['tmaxmem:'] = '{0:.3f}gb'.format(torch.cuda.max_memory_allocated() * 1e-9)
+                  trainer._last_log['tmemcache:'] = '{0:.3f}gb'.format(torch.cuda.memory_cached() * 1e-9)
+                  trainer._last_log['tmaxmemcache:'] = '{0:.3f}gb'.format(torch.cuda.max_memory_cached() * 1e-9)
+                  trainer._last_log['maxutil:'] = '{0:.0%}'.format(stats['maxutil'])
+
+                  if hasattr(trainer, 'dataload_fraction'):
+                    trainer._last_log['dperf:'] = '{0:.1%}'.format(trainer.dataload_fraction)
 
                 step += 1
 
@@ -138,14 +150,6 @@ class Trainer():
     self.process(t, **kwargs)
 
   def process(self, t, **kwargs):
-    if self.profile_stats or utils.is_profile:
-      stats = utils.gpustats()
-      self._last_log['maxmem:'] = '{0:.1%}'.format(stats['maxmemusage'])
-      self._last_log['maxutil:'] = '{0:.0%}'.format(stats['maxutil'])
-
-      if hasattr(self, 'dataload_fraction'):
-        self._last_log['dperf:'] = '{0:.1%}'.format(self.dataload_fraction)
-
     newlog = self.flatten_dict(kwargs)
     self._last_log.update(newlog)
 

@@ -74,8 +74,6 @@ with utils.block('Model') as b:
 with utils.block('Train Dataset') as b:
   b.print(repr(train_dataset))
 
-
-
 @utils.profile
 def main():
 
@@ -96,11 +94,12 @@ def main():
 
     loss_value, out = model(step, *data)
     loss_value = loss_value.mean() # multi-gpu accumulation
-    
-    #loss_value.backward()
+    torch.cuda.synchronize()
 
-    #mlog = model_obj.logger(step, data, out)
-    #trainer.log(step, loss=loss_value, m=mlog)
+    loss_value.backward()
+    torch.cuda.synchronize()
+
+    trainer.log(step, loss=loss_value, m=model_obj.logger(step, data, out))
     
     #with amp_handle.scale_loss(loss_value, optimizer) as scaled_loss:
     #  scaled_loss.backward()
@@ -125,11 +124,14 @@ def main():
     #     path = trainer.checkpoint(model, optimizer, tag='best_training', log=bar.write)
 
     #torch.nn.utils.clip_grad_value_(model.parameters(), pargs.max_grad)
-    #torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
-    #optimizer.step()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), pargs.max_grad_norm)
+    optimizer.step()
 
     if scheduler.step(step):
       trainer.log(step, lr=scheduler.lr(step))
+
+    del loss_value
+    del out
 
 main()
 

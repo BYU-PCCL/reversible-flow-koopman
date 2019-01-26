@@ -173,7 +173,7 @@ class FramePredictionBase(nn.Module):
       #b[:, i+1:] = b[:, i+1:].matmul(A)
 
     O = torch.cat(O, dim=0) # we can avoid constructing O if we need to
-    U = torch.potrf(MtM, upper=False)
+    U = torch.cholesky(MtM, upper=False)
     rhs = Y.matmul(O) #b.sum(1) 
     z = torch.trtrs(rhs.t(), U, transpose=False, upper=False)[0]
     x0 = torch.trtrs(z, U, transpose=True, upper=False)[0]
@@ -230,6 +230,11 @@ class FramePredictionBase(nn.Module):
              ':normed_prederr': ((w * w).reshape(y.size()) / y.norm(dim=2, keepdim=True)).mean()
              #':Atheta': torch.arccos(.5 * (torch.trace(A) - 1)) # still untested: https://math.stackexchange.com/questions/261617/find-the-rotation-axis-and-angle-of-a-matrix
              }
+
+    stats.update({':tmem_gb': torch.cuda.memory_allocated() * 1e-9,
+                  ':tmaxmem': torch.cuda.max_memory_allocated() * 1e-9,
+                  ':tmemcache': torch.cuda.memory_cached() * 1e-9,
+                  ':tmaxmemcache': torch.cuda.max_memory_cached() * 1e-9})
 
     errnorm = w.t().reshape(y.size()).norm(dim=2)
 

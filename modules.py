@@ -5,8 +5,6 @@ from libs.args.args import argchoice, argignore
 import numpy as np
 import pdb
 import utils
-
-from torch.utils import checkpoint
 import einops
 
 class Network(nn.Module):
@@ -24,10 +22,10 @@ class Network(nn.Module):
 
       self.net = nn.Sequential(
         nn.Conv2d(c, self.hidden, 3, stride=1, padding=1),
-        nn.ReLU(inplace=True),
+        nn.LeakyReLU(inplace=True),
         #nn.Dropout2d(p=0.3),
         nn.Conv2d(self.hidden, self.hidden, 1, stride=1, padding=0),
-        nn.ReLU(inplace=True),
+        nn.LeakyReLU(inplace=True),
         #nn.Dropout2d(p=0.3),
         nn.Conv2d(self.hidden, c * 2, 3, stride=1, padding=1))
 

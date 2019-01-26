@@ -28,13 +28,10 @@ test:
 
 experiment:
 	CUDA_VISIBLE_DEVICES=0 python main.py --epochs=500 --name=512-d10 --model.flow.flow.f.hidden=512 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
-	CUDA_VISIBLE_DEVICES=1 python main.py --epochs=500 --name=256-d10 --model.flow.flow.f.hidden=256 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
-	CUDA_VISIBLE_DEVICES=2 python main.py --epochs=500 --name=128-d10 --model.flow.flow.f.hidden=128 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
-	CUDA_VISIBLE_DEVICES=3 python main.py --epochs=500 --name=64-d10  --model.flow.flow.f.hidden=64  --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
-	CUDA_VISIBLE_DEVICES=5 python main.py --epochs=500 --name=256-d20 --model.flow.flow.f.hidden=256 --model.flow.num_layers_per_block=20 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
-	CUDA_VISIBLE_DEVICES=6 python main.py --epochs=500 --name=128-d20 --model.flow.flow.f.hidden=128 --model.flow.num_layers_per_block=20 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
-	CUDA_VISIBLE_DEVICES=7 python main.py --epochs=500 --name=64-d20  --model.flow.flow.f.hidden=64  --model.flow.num_layers_per_block=20 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
-	CUDA_VISIBLE_DEVICES=8 python main.py --epochs=500 --name=256-d40 --model.flow.flow.f.hidden=256 --model.flow.num_layers_per_block=40 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=1 python main.py --epochs=500 --name=256-d20 --model.flow.flow.f.hidden=256 --model.flow.num_layers_per_block=20 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=2 python main.py --epochs=500 --name=512-d10-checkpoint --model.flow.checkpoint_gradients=True --model.flow.flow.f.hidden=512 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
+	CUDA_VISIBLE_DEVICES=3 python main.py --epochs=500 --name=256-d20-checkpoint --model.flow.checkpoint_gradients=True --model.flow.flow.f.hidden=256 --model.flow.num_layers_per_block=20 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation
+	
 	# CUDA_VISIBLE_DEVICES=9 python main.py --epochs=500 --name=128-d40 --model.flow.flow.f.hidden=128 --model.flow.num_layers_per_block=40 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
 	# CUDA_VISIBLE_DEVICES=10 python main.py --epochs=500 --name=64-d40  --model.flow.flow.f.hidden=64  --model.flow.num_layers_per_block=40 --model.max_hidden_dim=256 --train_dataset.sequence_length=25 --model.flow.permute=ReversePermutation &
 

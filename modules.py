@@ -5,6 +5,8 @@ from libs.args.args import argchoice, argignore
 import numpy as np
 import pdb
 import utils
+
+import torch.utils.checkpoint as checkpoint
 import einops
 
 class Network(nn.Module):

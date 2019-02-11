@@ -5,6 +5,10 @@ from torchvision import datasets, transforms
 import os
 
 import libs.args.args as args
+import sys
+import os
+sys.path.append('./libs/moving-symbols/moving_symbols')
+from moving_symbols import MovingSymbolsEnvironment
 
 # class MnistDataset(datasets.MNIST):
 #   def __init__(self, root='/tmp/mnist', train=True, download=True, overfit=False):
@@ -113,59 +117,59 @@ class RotatingCube(torch.utils.data.Dataset):
 class MovingSymbols(torch.utils.data.Dataset):
     raw = None
     def __init__(self, root="./libs/moving-symbols/data", sequence_length=10, 
-                  overfit=False, size=20000, train=False, height=16, width=16):
+                  overfit=False, size=20000, train=False, height=16, width=16, velocity=3):
       super(MovingSymbols, self).__init__()
-
-      import sys
-      import os
-      sys.path.append('./libs/moving-symbols/moving_symbols')
-      from moving_symbols import MovingSymbolsEnvironment
 
       self.overfit = overfit
       self.batch_size = args.reader().batch_size
+      self.sequence_length = sequence_length
 
       self.params = {
         'data_dir': os.path.join(root, 'mnist'),
         'split': 'training',
         'color_output': True,
         'symbol_labels': range(10),
-        'position_speed_limits': (3, 3),
+        'position_speed_limits': (velocity, velocity),
         'video_size': (height, width),
-        'scale_limits': (.4, .4)
+        'scale_limits': (.4, .4) if height < 32 or width < 32 else (1, 1)
       }
 
       self.size = size if not self.overfit else self.batch_size
 
-      save_location = os.path.join(root, 'moving_symbols_{}.{}.{}.{}.npy'.format(size, height, width, sequence_length))
+      # save_location = os.path.join(root, 'moving_symbols_{}.{}.{}.{}.npy'.format(size, height, width, sequence_length))
+      # if os.path.isfile(save_location):
+      #   raw = np.load(save_location)
+      #   print('Loaded')
+      # else:
+      #   raw = []
+      #   from tqdm import tqdm
+      #   for s in tqdm(range(self.size), desc='Building Dataset', leave=False):
+      #     env = MovingSymbolsEnvironment(self.params, np.random.randint(0, 1))
+      #     raw.append(np.array([np.asarray(env.next()) for _ in range(sequence_length)]) / 255.)
+      #   raw = np.array(raw)
+      #   if raw.nbytes < 1e10:
+      #     print('Attempting to save {} bytes'.format(raw.nbytes))
+      #     np.save(save_location, raw)
+      #     print('Saved')
+      #   else:
+      #     print(raw.nbytes, 'is too big to save')
 
-      if os.path.isfile(save_location):
-        raw = np.load(save_location)
-      else:
-        raw = []
-        from tqdm import tqdm
-        for s in tqdm(range(self.size), desc='Building Dataset', leave=False):
-          env = MovingSymbolsEnvironment(self.params, np.random.randint(0, 1))
-          raw.append(np.array([np.asarray(env.next()) for _ in range(sequence_length)]) / 255.)
-        raw = np.array(raw)
-        if raw.nbytes < 1e10:
-          print('Attempting to save {} bytes'.format(raw.nbytes))
-          np.save(save_location, raw)
-        else:
-          print(raw.nbytes, 'is too big to save')
-
-      self.data = torch.from_numpy(raw.astype(np.float32)).permute(0, 1, 4, 2, 3).contiguous()
+      # self.data = torch.from_numpy(raw.astype(np.float32)).permute(0, 1, 4, 2, 3).contiguous()
       
-      self.centering_const = self.data.mean()
-      self.normalizing_const = self.data.abs().mean()
+      self.centering_const = 0.     #self.data.mean()
+      self.normalizing_const = .1 #self.data.abs().mean()
 
     def denormalize(self, x):
       return x * self.normalizing_const + self.centering_const
 
     def __getitem__(self, index):
-      index = index % (self.size if not self.overfit else self.batch_size)
+      # index = index % (self.size if not self.overfit else self.batch_size)
 
-      raw = self.data[index]
-      raw += (torch.rand_like(raw) - .5) * 1 / 256.
+      # raw = self.data[index]
+      env = MovingSymbolsEnvironment(self.params, np.random.randint(0, 1))
+      raw = np.array([np.asarray(env.next()) for _ in range(self.sequence_length)]) / 255.
+      raw = torch.from_numpy(raw.astype(np.float32)).permute(0, 3, 1, 2).contiguous()
+      raw += (torch.rand_like(raw) - .5) * 1 / 255.
       raw = (raw - self.centering_const) / self.normalizing_const
 
       return raw, raw.view(-1)[0]
